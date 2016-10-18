@@ -2,5 +2,15 @@
 name = "vtd_xml"
 version = "0.1.0"
 authors = ["Artem <artemciy@gmail.com>"]
+links = "vtdxml"
+build = "build.rs"
+
+[lib]
+name = "vtd_xml"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+doctest = false 
 
 [dependencies]
+
+[build-dependencies]
