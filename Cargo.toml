@@ -12,5 +12,7 @@ crate-type = ["rlib"]
 doctest = false 
 
 [dependencies]
+encoding = "0.2"
+libc = "0.2"
 
 [build-dependencies]
