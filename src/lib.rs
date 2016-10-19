@@ -120,6 +120,9 @@ pub mod sys {
     /// internal state so VTDGen can process the next file.
     pub fn getNav (vg: *mut VTDGen) -> *mut VTDNav;
     pub fn cloneNav_shim (vn: *mut VTDNav) -> *mut VTDNav;
+    /// This method takes a vtd index, and recover its correspondin node position, the index can only be of node type element,
+    /// document, attribute name, attribute value or character data, or CDATA. */
+    pub fn recoverNode_shim (vn: *mut VTDNav, index: c_int);
     pub fn freeVTDNav_shim (vn: *mut VTDNav);
 
     // vtdNav.h
