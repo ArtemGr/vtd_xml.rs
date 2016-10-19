@@ -25,6 +25,7 @@ use libc::c_void;
 use std::mem::transmute;
 use std::ptr::null;
 use std::ffi::CStr;
+use std::fmt::{self, Display};
 
 // Bindgen example:
 // cd /tmp && git clone https://github.com/ArtemGr/vtd_xml.rs.git && cd vtd_xml.rs && cargo build
@@ -107,7 +108,7 @@ pub mod sys {
     /// Generating VTD tokens and Location cache info for an XML file.
     ///
     /// Throws no exceptions (cf. https://ximpleware.wordpress.com/2016/06/02/parsefile-vs-parse-a-quick-comparison/).
-    pub fn parseFile (vg: *mut VTDGen, ns: Boolean, fileName: *const c_char) -> Boolean;
+    pub fn parseFile (vg: *mut VTDGen, ns: Boolean, fileName: *const u8) -> Boolean;
     pub fn selectLcDepth (vg: *mut VTDGen, d: c_int);
     /// Returns the VTDNav object after parsing, it also cleans 
     /// internal state so VTDGen can process the next file.
@@ -196,6 +197,8 @@ pub struct VtdError {
   pub subtype: i32,
   pub msg: String,
   pub sub_msg: String}
+impl Display for VtdError {
+  fn fmt (&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {write! (fmt, "{:?}", *self)}}
 
 pub fn vtd_catch (mut cb: &mut FnMut()) -> Result<(), VtdError> {
   // http://stackoverflow.com/a/38997480/257568.

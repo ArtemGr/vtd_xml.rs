@@ -12,6 +12,8 @@ fn cmd (dir: &Path, cmd: &str) {
   if !status.success() {panic! ("cmd] exit code {:?}", status.code())}
   println! ("</cmd>");}
 
+// TODO: Make sure we do a rebuild after a crate upgrade. Otherwise the shims might get outdated.
+
 fn main() {
   let out_dir = env::var ("OUT_DIR") .expect ("!OUT_DIR");
   let out_dir = Path::new (&out_dir);
