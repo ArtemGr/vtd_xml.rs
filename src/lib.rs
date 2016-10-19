@@ -178,20 +178,24 @@ pub mod sys {
 
 pub mod helpers {
   use ::sys::UCSChar;
-  use encoding::{Encoding, DecoderTrap};
-  use encoding::all::UTF_16LE;
+  //use encoding::{Encoding, DecoderTrap};
+  //use encoding::all::UTF_16LE;
   use libc;
-  use std::mem::size_of;
+  //use std::mem::size_of;
   use std::ptr::null;
-  use std::slice::from_raw_parts;
+  //use std::slice::from_raw_parts;
 
   /// Decodes a NIL-terminated UCSChar into a UTF-8 string.
   pub fn ucs2string (us: *const UCSChar) -> String {
     if us == null() {return String::new()}
-    let mut len = 0;
-    while unsafe {*us.offset (len)} != 0 {len += 1}
-    let slice = unsafe {from_raw_parts (us as *const u8, len as usize * size_of::<UCSChar>())};
-    UTF_16LE.decode (slice, DecoderTrap::Ignore) .expect ("!UCS")}
+    let mut buf = String::new();
+    let mut idx = 0;
+    loop {
+      let ch = unsafe {*us.offset (idx)};
+      if ch == 0 {break}
+      buf.push (ch as u8 as char);
+      idx += 1;}
+    buf}
 
   pub fn str2ucschar (s: &str) -> Vec<UCSChar> {
     let mut v = Vec::with_capacity (s.len() + 1);
