@@ -12,8 +12,6 @@ fn cmd (dir: &Path, cmd: &str) {
   if !status.success() {panic! ("cmd] exit code {:?}", status.code())}
   println! ("</cmd>");}
 
-// TODO: Make sure we do a rebuild after a crate upgrade. Otherwise the shims might get outdated.
-
 fn main() {
   let out_dir = env::var ("OUT_DIR") .expect ("!OUT_DIR");
   let out_dir = Path::new (&out_dir);
@@ -57,12 +55,13 @@ fn main() {
     -Og -fomit-frame-pointer -fforce-addr -march=core2 \
     -c shims.c -o shims.o");
 
+  // NB: We should always repack the library in order to include any shim updates.
   let lib = sources.join ("libvtdxml.a");
-  if !lib.exists() {
-    cmd (&sources, "ar rcs libvtdxml.a shims.o \
-      arrayList.o fastIntBuffer.o fastLongBuffer.o contextBuffer.o vtdNav.o vtdGen.o autoPilot.o XMLChar.o helper.o lex.yy.o l8.tab.o \
-      literalExpr.o numberExpr.o pathExpr.o filterExpr.o binaryExpr.o unaryExpr.o funcExpr.o locationPathExpr.o intHash.o unionExpr.o \
-      decoder.o XMLModifier.o nodeRecorder.o indexHandler.o bookMark.o elementFragmentNs.o transcoder.o textIter.o variableExpr.o cachedExpr.o");}
+  let _ = std::fs::remove_file (&lib);
+  cmd (&sources, "ar rcs libvtdxml.a shims.o \
+    arrayList.o fastIntBuffer.o fastLongBuffer.o contextBuffer.o vtdNav.o vtdGen.o autoPilot.o XMLChar.o helper.o lex.yy.o l8.tab.o \
+    literalExpr.o numberExpr.o pathExpr.o filterExpr.o binaryExpr.o unaryExpr.o funcExpr.o locationPathExpr.o intHash.o unionExpr.o \
+    decoder.o XMLModifier.o nodeRecorder.o indexHandler.o bookMark.o elementFragmentNs.o transcoder.o textIter.o variableExpr.o cachedExpr.o");
 
   println! ("cargo:rustc-link-lib=static=vtdxml");
   println! ("cargo:rustc-link-search=native={}", sources.to_string_lossy());}
