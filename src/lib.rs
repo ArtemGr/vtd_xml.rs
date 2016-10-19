@@ -186,7 +186,7 @@ pub mod helpers {
     let slice = unsafe {from_raw_parts (us as *const u8, len as usize * size_of::<UCSChar>())};
     UTF_16LE.decode (slice, DecoderTrap::Ignore) .expect ("!UCS")}
 
-  pub fn str2ucshar (s: &str) -> Vec<UCSChar> {
+  pub fn str2ucschar (s: &str) -> Vec<UCSChar> {
     let mut v = Vec::with_capacity (s.len() + 1);
     for ch in s.chars() {v.push (ch as UCSChar)}
     v.push (0);  // NIL-terminated.
@@ -250,11 +250,11 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void) {
       unsafe {parse (vg, Bool::TRUE)};
       let vn = unsafe {getNav (vg)};
       let ap = unsafe {createAutoPilot2()};
-      let ns1 = str2ucshar ("ns1");
-      let url = str2ucshar ("http://purl.org/dc/elements/1.1/");
+      let ns1 = str2ucschar ("ns1");
+      let url = str2ucschar ("http://purl.org/dc/elements/1.1/");
       unsafe {declareXPathNameSpace (ap, ns1.as_ptr(), url.as_ptr())};
       let mut num = 0;
-      if unsafe {selectXPath (ap, str2ucshar ("//ns1:*") .as_ptr())} == Bool::TRUE {
+      if unsafe {selectXPath (ap, str2ucschar ("//ns1:*") .as_ptr())} == Bool::TRUE {
         unsafe {bind (ap, vn)};
         let mut result; while {result = unsafe {evalXPath (ap)}; result} != -1 {
           let tmp_string = unsafe {toString (vn, result)};
@@ -284,9 +284,9 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void) {
       unsafe {setDoc (vg, xml.as_ptr(), xml.len() as c_int)};
       unsafe {parse (vg, Bool::FALSE)};
       let vn = unsafe {getNav (vg)};
-      assert! (unsafe {toElement2_shim (vn, Direction::FirstChild, str2ucshar ("bar") .as_ptr())} == Bool::TRUE);
+      assert! (unsafe {toElement2_shim (vn, Direction::FirstChild, str2ucschar ("bar") .as_ptr())} == Bool::TRUE);
       assert_eq! (ucs2string (unsafe {toString (vn, getCurrentIndex (vn))}), "bar");
-      let surname = unsafe {getAttrVal (vn, str2ucshar ("surname") .as_ptr())};
+      let surname = unsafe {getAttrVal (vn, str2ucschar ("surname") .as_ptr())};
       assert! (surname != -1);
       assert_eq! (ucs2string (unsafe {toString (vn, surname)}), "Stover");
       let text = unsafe {getText (vn)};
