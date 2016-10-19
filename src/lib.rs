@@ -120,6 +120,8 @@ pub mod sys {
 
     /// Get the depth (>=0) of the current element.
     pub fn getCurrentDepth (vn: *mut VTDNav) -> c_int;
+    /// The index of the element under the cursor. Can be used with `toString` to fetch the element name.
+    pub fn getCurrentIndex (vn: *mut VTDNav) -> c_int;
     /// Move the cursor to the element according to the direction constants If no such element, no position change and return false.
     pub fn toElement (vn: *mut VTDNav, direction: Direction) -> Boolean;
     /// Move the cursor to the element according to the direction constants and the element name.
@@ -127,14 +129,14 @@ pub mod sys {
     /// "*" matches any element.
     pub fn toElement2(vn: *mut VTDNav, direction: Direction, en: *const UCSChar) -> Boolean;
     /// Test if the current element matches the given name.
-    pub fn matchElement (vn: *mut VTDNav, en: *mut UCSChar) -> Boolean;
-    pub fn toNormalizedXPathString (vn: *mut VTDNav, j: c_int) -> *mut UCSChar;
+    pub fn matchElement (vn: *mut VTDNav, en: *const UCSChar) -> Boolean;
     /// Return the attribute count of the element at the cursor position.
     pub fn getAttrCount (vn: *mut VTDNav) -> c_int;
     /// Test whether current element has an attribute with the matching name.
-    pub fn hasAttr (vn: *mut VTDNav, attrName: *mut UCSChar) -> Boolean;
+    pub fn hasAttr (vn: *mut VTDNav, attrName: *const UCSChar) -> Boolean;
     /// Get the token index of the attribute value given an attribute name.
-    pub fn getAttrVal (vn: *mut VTDNav, attrName: *mut UCSChar) -> c_int;
+    /// Returns -1 if the attribute wasn't found.
+    pub fn getAttrVal (vn: *mut VTDNav, attrName: *const UCSChar) -> c_int;
 
     // autoPilot.h
 
@@ -249,6 +251,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void) {
       let ns1 = str2uchar ("ns1");
       let url = str2uchar ("http://purl.org/dc/elements/1.1/");
       unsafe {declareXPathNameSpace (ap, ns1.as_ptr(), url.as_ptr())};
+      let mut num = 0;
       if unsafe {selectXPath (ap, str2uchar ("//ns1:*") .as_ptr())} == Bool::TRUE {
         unsafe {bind (ap, vn)};
         let mut result; while {result = unsafe {evalXPath (ap)}; result} != -1 {
@@ -261,14 +264,30 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void) {
             let tmp_string = unsafe {toNormalizedString (vn, t)};
             text = usc2string (tmp_string);
             unsafe {libc::free (tmp_string as *mut c_void)}}
-          println! ("evalXPath result: {}; name: {}; text: {}", result, name, text);}}
+          //println! ("evalXPath result: {}; name: {}; text: {}", result, name, text);
+          match {num += 1; num} {
+            1 => {assert_eq! (name, "dc:creator"); assert_eq! (text, "Jennifer Mears")},
+            2 => {assert_eq! (name, "dc:date"); assert_eq! (text, "2004-06-14T00:00:00Z")},
+            x => panic! ("num is {}", x)}}}
+      assert_eq! (num, 2);
       unsafe {freeVTDNav_shim (vn)};
       unsafe {freeVTDGen (vg)};
       unsafe {freeAutoPilot (ap)};
     }) .expect ("!rss_reader");}
 
   #[test] fn walk() {
-    //let xml = "<foo><bar surname=\"Stover\">Smokey</bar></foo>";
-
-  }
-}
+    vtd_catch (&mut || {
+      let xml = "<foo><bar surname=\"Stover\">Smokey</bar></foo>";
+      let vg = unsafe {createVTDGen()};
+      unsafe {setDoc (vg, xml.as_ptr(), xml.len() as c_int)};
+      unsafe {parse (vg, Bool::FALSE)};
+      let vn = unsafe {getNav (vg)};
+      assert! (unsafe {toElement2 (vn, Direction::FirstChild, str2uchar ("bar") .as_ptr())} == Bool::TRUE);
+      assert_eq! (usc2string (unsafe {toString (vn, getCurrentIndex (vn))}), "bar");
+      let surname = unsafe {getAttrVal (vn, str2uchar ("surname") .as_ptr())};
+      assert! (surname != -1);
+      assert_eq! (usc2string (unsafe {toString (vn, surname)}), "Stover");
+      let text = unsafe {getText (vn)};
+      assert! (text != -1);
+      assert_eq! (usc2string (unsafe {toString (vn, text)}), "Smokey");
+  }) .expect ("!walk");}}
