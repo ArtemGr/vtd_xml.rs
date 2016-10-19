@@ -30,6 +30,7 @@ fn main() {
   let target = env::var ("TARGET") .expect ("!TARGET");
   println! ("target: {}", target);
 
+  // TODO: See if we're in a Release cargo build and use -O3 there.
   cmd (&sources, "perl -i.tmp -pe 's/CFLAGS= -c -O3/CFLAGS= -c -ggdb -fPIC -Og/' makefile");
 
   if target.ends_with ("-windows-gnu") {
@@ -42,9 +43,9 @@ fn main() {
       #include \"customTypes.h\"
       _thread struct exception_context the_exception_context[1];
 
-      int vtd_try_catch_shim (void (*rust_cb) (void*), void* closure_pp, exception* ex_out) {
+      int vtd_try_catch_shim (void (*rust_cb) (void*, void*), void* closure_pp, void* panic_p, exception* ex_out) {
         exception e; int exception_raised = 0;
-        Try {rust_cb (closure_pp);} Catch (e) {exception_raised = 1; if (ex_out) *ex_out = e;}
+        Try {rust_cb (closure_pp, panic_p);} Catch (e) {exception_raised = 1; if (ex_out) *ex_out = e;}
         return exception_raised;}
 
       #include \"vtdNav.h\"

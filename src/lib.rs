@@ -18,14 +18,20 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
+#![feature(test)]
+
 extern crate encoding;
+#[macro_use] extern crate lazy_static;
 extern crate libc;
+extern crate test;
 
 use libc::c_void;
-use std::mem::transmute;
-use std::ptr::null;
+use std::any::Any;
 use std::ffi::CStr;
 use std::fmt::{self, Display};
+use std::mem::transmute;
+use std::panic::catch_unwind;
+use std::ptr::null;
 
 // Bindgen example:
 // cd /tmp && git clone https://github.com/ArtemGr/vtd_xml.rs.git && cd vtd_xml.rs && cargo build
@@ -167,7 +173,8 @@ pub mod sys {
     // shims.c
 
     /// Returns 0 on success and 1 if VTD exception was raised.
-    pub fn vtd_try_catch_shim (cb: extern fn (*mut c_void), arg: *mut c_void, ex: *mut VtdException) -> c_int;}}
+    pub fn vtd_try_catch_shim (cb: extern fn (*mut c_void, *mut c_void),
+                               closure_pp: *mut c_void, panic_p: *mut c_void, ex: *mut VtdException) -> c_int;}}
 
 pub mod helpers {
   use ::sys::UCSChar;
@@ -202,11 +209,19 @@ pub struct VtdError {
 impl Display for VtdError {
   fn fmt (&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {write! (fmt, "{:?}", *self)}}
 
+/// Catches VTD-XML exceptions, returning them as a Rust error.
+///
+/// Rust panics in the `cb` are propagated.
 pub fn vtd_catch (mut cb: &mut FnMut()) -> Result<(), VtdError> {
   // http://stackoverflow.com/a/38997480/257568.
   let closure_pp: *mut c_void = unsafe {transmute (&mut cb)};
   let mut ex = sys::VtdException::default();
-  if unsafe {::sys::vtd_try_catch_shim (::vtd_xml_try_catch_rust_shim, closure_pp, &mut ex)} == 0 {Ok (())} else {
+  let mut panic = String::new();
+  let panic_p: *mut c_void = unsafe {transmute (&mut panic)};
+  if unsafe {::sys::vtd_try_catch_shim (::vtd_xml_try_catch_rust_shim, closure_pp, panic_p, &mut ex)} == 0 {
+    if !panic.is_empty() {panic! ("vtd_catch] {}", panic)}
+    Ok (())
+  } else {
     Err (VtdError {
       et: ex.et,
       subtype: ex.subtype as i32,
@@ -215,22 +230,42 @@ pub fn vtd_catch (mut cb: &mut FnMut()) -> Result<(), VtdError> {
       sub_msg: if ex.sub_msg == null() {String::new()} else {
         unsafe {CStr::from_ptr (ex.sub_msg as *mut i8)} .to_string_lossy().into_owned()}})}}
 
+/// Useful with panic handlers.
+fn any_to_str<'a> (message: &'a Box<Any + Send + 'static>) -> Option<&'a str> {
+  if let Some (message) = message.downcast_ref::<&str>() {return Some (message)}
+  if let Some (message) = message.downcast_ref::<String>() {return Some (&message[..])}
+  return None}
+
 /// Called from inside a C function (`vtd_try_catch_shim`) in order to execute some Rust code while catching any VTD-XML exceptions.
 #[no_mangle] #[doc(hidden)]
-pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void) {
-  let closure: &mut &mut FnMut() = unsafe {transmute (closure_pp)};
-  // TODO: `catch_unwind` (and rethrow a panic from `vtd_catch`).
-  closure();}
+pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p: *mut c_void) {
+  if let Err (panic) = catch_unwind (|| {
+    let closure: &mut &mut FnMut() = unsafe {transmute (closure_pp)};
+    closure();}) {
+      let message = match any_to_str (&panic) {Some (s) => s, None => "panic in vtd_catch"};
+      let panic_buf: &mut String = unsafe {transmute (panic_p)};
+      panic_buf.push_str (message);}}
+
+// TODO: Add benchmarks in order to stress-test the library and the wrapper.
 
 #[cfg(test)] mod tests {
   use ::sys::*;
   use ::helpers::*;
   use ::vtd_catch;
   use libc::{self, c_void, c_int};
+  use std;
+  use std::panic::catch_unwind;
+  use std::sync::Mutex;
+  use test::Bencher;
+
+  // C version *should* be thread-safe, but I seem to be seing an EOF issue when using VTD from multiple threads.
+  // "Parse exception in getChar", "Premature EOF reached, XML document incomplete".
+  // With a global lock it never happens.
+  lazy_static! {
+    static ref LOCK: Mutex<()> = Mutex::new (());}
 
   #[test] fn rss_reader() {  // http://vtd-xml.sourceforge.net/codeSample/cs2.html, RSSReader.c
-    // C version *should* be thread-safe, but I seem to be seing an EOF issue when using VTD from multiple threads.
-    // "Parse exception in getChar", "Premature EOF reached, XML document incomplete".
+    let _lock = LOCK.lock().expect ("!lock");
     vtd_catch (&mut || {
       let vg = unsafe {createVTDGen()};
       // http://vtd-xml.sourceforge.net/codeSample/servers.xml
@@ -278,6 +313,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void) {
     }) .expect ("!rss_reader");}
 
   #[test] fn walk() {
+    let _lock = LOCK.lock().expect ("!lock");
     vtd_catch (&mut || {
       let xml = "<foo><bar surname=\"Stover\">Smokey</bar></foo>";
       let vg = unsafe {createVTDGen()};
@@ -292,4 +328,17 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void) {
       let text = unsafe {getText (vn)};
       assert! (text != -1);
       assert_eq! (ucs2string (unsafe {toString (vn, text)}), "Smokey");
-  }) .expect ("!walk");}}
+  }) .expect ("!walk");}
+
+  #[bench] fn panic (bencher: &mut Bencher) {  // See if `vtd_catch` would propagate the Rust panics from the closure.
+    std::panic::set_hook (Box::new (|_| ()));  // Prevents the panics from cussing to the stderr.
+    let _lock = LOCK.lock().expect ("!lock");
+    bencher.iter (|| {
+      match catch_unwind (|| {
+        vtd_catch (&mut || panic! ("woot")) .expect ("!vtd_catch");}) {
+          Ok (_) => panic! ("No panic!"),
+          Err (panic) => {
+            let message = ::any_to_str (&panic) .expect ("!message");
+            assert_eq! (message, "vtd_catch] woot");}}});
+    let _ = std::panic::take_hook();  // Restore the panic handler.
+} }
