@@ -127,7 +127,7 @@ pub mod sys {
     /// Move the cursor to the element according to the direction constants and the element name.
     /// If no such element, no position change and return false.
     /// "*" matches any element.
-    pub fn toElement2(vn: *mut VTDNav, direction: Direction, en: *const UCSChar) -> Boolean;
+    pub fn toElement2_shim (vn: *mut VTDNav, direction: Direction, en: *const UCSChar) -> Boolean;
     /// Test if the current element matches the given name.
     pub fn matchElement (vn: *mut VTDNav, en: *const UCSChar) -> Boolean;
     /// Return the attribute count of the element at the cursor position.
@@ -229,6 +229,8 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void) {
   use libc::{self, c_void, c_int};
 
   #[test] fn rss_reader() {  // http://vtd-xml.sourceforge.net/codeSample/cs2.html, RSSReader.c
+    // C version *should* be thread-safe, but I seem to be seing an EOF issue when using VTD from multiple threads.
+    // "Parse exception in getChar", "Premature EOF reached, XML document incomplete".
     vtd_catch (&mut || {
       let vg = unsafe {createVTDGen()};
       // http://vtd-xml.sourceforge.net/codeSample/servers.xml
@@ -282,7 +284,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void) {
       unsafe {setDoc (vg, xml.as_ptr(), xml.len() as c_int)};
       unsafe {parse (vg, Bool::FALSE)};
       let vn = unsafe {getNav (vg)};
-      assert! (unsafe {toElement2 (vn, Direction::FirstChild, str2uchar ("bar") .as_ptr())} == Bool::TRUE);
+      assert! (unsafe {toElement2_shim (vn, Direction::FirstChild, str2uchar ("bar") .as_ptr())} == Bool::TRUE);
       assert_eq! (usc2string (unsafe {toString (vn, getCurrentIndex (vn))}), "bar");
       let surname = unsafe {getAttrVal (vn, str2uchar ("surname") .as_ptr())};
       assert! (surname != -1);
