@@ -5,6 +5,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+// TODO: Should probably switch to https://github.com/dlo9/vtd-xml-c.
+
 fn cmd (dir: &Path, cmd: &str) {
   println! ("<cmd cmd=\"{}\" dir=\"{}\">", cmd, dir.to_string_lossy());
   let status = Command::new ("sh") .arg ("-c") .arg (cmd) .current_dir (dir) .stdout (Stdio::inherit()) .stderr (Stdio::inherit())

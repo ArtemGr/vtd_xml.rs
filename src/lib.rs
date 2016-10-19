@@ -185,24 +185,26 @@ pub mod helpers {
   use std::ptr::null;
   //use std::slice::from_raw_parts;
 
-  /// Decodes a NIL-terminated UCSChar into a UTF-8 string.
-  pub fn ucs2string (us: *const UCSChar) -> String {
-    if us == null() {return String::new()}
-    let mut buf = String::new();
+  /// Decodes a NIL-terminated `wchar_t` string into a UTF-8 Rust string. WIP.
+  pub fn ucs2string<'a> (buf: &'a mut String, ucs: *const UCSChar, free: bool) -> &'a String {
+    buf.clear();
+    if ucs == null() {return buf}
     let mut idx = 0;
     loop {
-      let ch = unsafe {*us.offset (idx)};
+      let ch = unsafe {*ucs.offset (idx)};
       if ch == 0 {break}
       buf.push (ch as u8 as char);
       idx += 1;}
+    if free {unsafe {libc::free (ucs as *mut libc::c_void)}}
     buf}
 
-  pub fn str2ucschar (s: &str) -> Vec<UCSChar> {
-    let mut v = Vec::with_capacity (s.len() + 1);
-    for ch in s.chars() {v.push (ch as UCSChar)}
-    v.push (0);  // NIL-terminated.
-    assert_eq! (s.len(), unsafe {libc::wcslen (v.as_ptr())});
-    v}}
+  /// Converts a UTF-8 string into a NIL-terminated `wchar_t` string. WIP.
+  pub fn str2ucs<'a> (buf: &'a mut Vec<UCSChar>, s: &str) -> &'a Vec<UCSChar> {
+    buf.clear();
+    buf.reserve (s.len() + 1);
+    for ch in s.chars() {buf.push (ch as UCSChar)}
+    buf.push (0);  // NIL-terminated.
+    buf}}
 
 #[derive(Debug)]
 pub struct VtdError {
@@ -256,7 +258,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
   use ::sys::*;
   use ::helpers::*;
   use ::vtd_catch;
-  use libc::{self, c_void, c_int};
+  use libc::{self, c_int};
   use std;
   use std::panic::catch_unwind;
   use std::sync::Mutex;
@@ -267,6 +269,12 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
   // With a global lock it never happens.
   lazy_static! {
     static ref LOCK: Mutex<()> = Mutex::new (());}
+
+  #[test] fn str2ucs_test() {
+    let mut to_ucs = Vec::new();
+    let mut from_ucs = String::new();
+    assert_eq! (unsafe {libc::wcslen (str2ucs (&mut to_ucs, "foo") .as_ptr())}, 3);
+    assert_eq! (ucs2string (&mut from_ucs, str2ucs (&mut to_ucs, "foo") .as_ptr(), false), "foo");}
 
   #[test] fn rss_reader() {  // http://vtd-xml.sourceforge.net/codeSample/cs2.html, RSSReader.c
     let _lock = LOCK.lock().expect ("!lock");
@@ -289,22 +297,22 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
       unsafe {parse (vg, Bool::TRUE)};
       let vn = unsafe {getNav (vg)};
       let ap = unsafe {createAutoPilot2()};
-      let ns1 = str2ucschar ("ns1");
-      let url = str2ucschar ("http://purl.org/dc/elements/1.1/");
+      let mut to_ucs = Vec::new();
+      let mut from_ucs = String::new();
+      let ns1 = str2ucs (&mut to_ucs, "ns1") .clone();
+      let url = str2ucs (&mut to_ucs, "http://purl.org/dc/elements/1.1/") .clone();
       unsafe {declareXPathNameSpace (ap, ns1.as_ptr(), url.as_ptr())};
       let mut num = 0;
-      if unsafe {selectXPath (ap, str2ucschar ("//ns1:*") .as_ptr())} == Bool::TRUE {
+      if unsafe {selectXPath (ap, str2ucs (&mut to_ucs, "//ns1:*") .as_ptr())} == Bool::TRUE {
         unsafe {bind (ap, vn)};
         let mut result; while {result = unsafe {evalXPath (ap)}; result} != -1 {
           let tmp_string = unsafe {toString (vn, result)};
-          let name = ucs2string (tmp_string);
-          unsafe {libc::free (tmp_string as *mut c_void)};
+          let name = ucs2string (&mut from_ucs, tmp_string, true) .clone();
           let t = unsafe {getText (vn)};
           let mut text = String::new();
           if t != -1 {
             let tmp_string = unsafe {toNormalizedString (vn, t)};
-            text = ucs2string (tmp_string);
-            unsafe {libc::free (tmp_string as *mut c_void)}}
+            text.push_str (&ucs2string (&mut from_ucs, tmp_string, true));}
           //println! ("evalXPath result: {}; name: {}; text: {}", result, name, text);
           match {num += 1; num} {
             1 => {assert_eq! (name, "dc:creator"); assert_eq! (text, "Jennifer Mears")},
@@ -324,14 +332,16 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
       unsafe {setDoc (vg, xml.as_ptr(), xml.len() as c_int)};
       unsafe {parse (vg, Bool::FALSE)};
       let vn = unsafe {getNav (vg)};
-      assert! (unsafe {toElement2_shim (vn, Direction::FirstChild, str2ucschar ("bar") .as_ptr())} == Bool::TRUE);
-      assert_eq! (ucs2string (unsafe {toString (vn, getCurrentIndex_shim (vn))}), "bar");
-      let surname = unsafe {getAttrVal (vn, str2ucschar ("surname") .as_ptr())};
+      let mut to_ucs = Vec::new();
+      let mut from_ucs = String::new();
+      assert! (unsafe {toElement2_shim (vn, Direction::FirstChild, str2ucs (&mut to_ucs, "bar") .as_ptr())} == Bool::TRUE);
+      assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, getCurrentIndex_shim (vn))}, true), "bar");
+      let surname = unsafe {getAttrVal (vn, str2ucs (&mut to_ucs, "surname") .as_ptr())};
       assert! (surname != -1);
-      assert_eq! (ucs2string (unsafe {toString (vn, surname)}), "Stover");
+      assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, surname)}, true), "Stover");
       let text = unsafe {getText (vn)};
       assert! (text != -1);
-      assert_eq! (ucs2string (unsafe {toString (vn, text)}), "Smokey");
+      assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Smokey");
   }) .expect ("!walk");}
 
   #[bench] fn panic (bencher: &mut Bencher) {  // See if `vtd_catch` would propagate the Rust panics from the closure.
