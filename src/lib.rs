@@ -121,7 +121,7 @@ pub mod sys {
     /// Get the depth (>=0) of the current element.
     pub fn getCurrentDepth (vn: *mut VTDNav) -> c_int;
     /// The index of the element under the cursor. Can be used with `toString` to fetch the element name.
-    pub fn getCurrentIndex (vn: *mut VTDNav) -> c_int;
+    pub fn getCurrentIndex_shim (vn: *mut VTDNav) -> c_int;
     /// Move the cursor to the element according to the direction constants If no such element, no position change and return false.
     pub fn toElement (vn: *mut VTDNav, direction: Direction) -> Boolean;
     /// Move the cursor to the element according to the direction constants and the element name.
@@ -219,7 +219,7 @@ pub fn vtd_catch (mut cb: &mut FnMut()) -> Result<(), VtdError> {
 #[no_mangle] #[doc(hidden)]
 pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void) {
   let closure: &mut &mut FnMut() = unsafe {transmute (closure_pp)};
-  // TODO: catch_unwind.
+  // TODO: `catch_unwind` (and rethrow a panic from `vtd_catch`).
   closure();}
 
 #[cfg(test)] mod tests {
@@ -285,7 +285,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void) {
       unsafe {parse (vg, Bool::FALSE)};
       let vn = unsafe {getNav (vg)};
       assert! (unsafe {toElement2_shim (vn, Direction::FirstChild, str2ucschar ("bar") .as_ptr())} == Bool::TRUE);
-      assert_eq! (ucs2string (unsafe {toString (vn, getCurrentIndex (vn))}), "bar");
+      assert_eq! (ucs2string (unsafe {toString (vn, getCurrentIndex_shim (vn))}), "bar");
       let surname = unsafe {getAttrVal (vn, str2ucschar ("surname") .as_ptr())};
       assert! (surname != -1);
       assert_eq! (ucs2string (unsafe {toString (vn, surname)}), "Stover");

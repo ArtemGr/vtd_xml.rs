@@ -50,6 +50,7 @@ fn main() {
       #include \"vtdNav.h\"
       void freeVTDNav_shim (VTDNav *vn) {vn->__freeVTDNav(vn);};
       Boolean toElement2_shim (VTDNav *vn, navDir direction, UCSChar *en) {return vn->__toElement2 (vn, direction, en);}
+      int getCurrentIndex_shim (VTDNav *vn) {return getCurrentIndex (vn);}
     ") .expect ("!write"); }
   cmd (&sources, "gcc -ggdb -fPIC \
     -Og -fomit-frame-pointer -fforce-addr -march=core2 \
