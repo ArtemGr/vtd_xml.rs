@@ -30,7 +30,7 @@ fn main() {
   let target = env::var ("TARGET") .expect ("!TARGET");
   println! ("target: {}", target);
 
-  cmd (&sources, "perl -i.tmp -pe 's/CFLAGS= -c/CFLAGS= -c -fpic/' makefile");
+  cmd (&sources, "perl -i.tmp -pe 's/CFLAGS= -c -O3/CFLAGS= -c -ggdb -fPIC -Og/' makefile");
 
   if target.ends_with ("-windows-gnu") {
     cmd (&sources, "perl -i.tmp -pe 's/-lm//' makefile");}
@@ -41,11 +41,17 @@ fn main() {
     shims.write (b"
       #include \"customTypes.h\"
       _thread struct exception_context the_exception_context[1];
+
+      int vtd_try_catch_shim (void (*rust_cb) (void*), void* closure_pp, exception* ex_out) {
+        exception e; int exception_raised = 0;
+        Try {rust_cb (closure_pp);} Catch (e) {exception_raised = 1; if (ex_out) *ex_out = e;}
+        return exception_raised;}
+
       #include \"vtdNav.h\"
       void freeVTDNav_shim (VTDNav *vn) {vn->__freeVTDNav(vn);};
     ") .expect ("!write"); }
-  cmd (&sources, "gcc \
-    -O3 -fomit-frame-pointer -fforce-addr -frerun-cse-after-loop -fexpensive-optimizations -fregmove -frerun-loop-opt -march=core2 \
+  cmd (&sources, "gcc -ggdb -fPIC \
+    -Og -fomit-frame-pointer -fforce-addr -march=core2 \
     -c shims.c -o shims.o");
 
   let lib = sources.join ("libvtdxml.a");
