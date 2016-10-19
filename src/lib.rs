@@ -119,7 +119,7 @@ pub mod sys {
     /// Returns the VTDNav object after parsing, it also cleans 
     /// internal state so VTDGen can process the next file.
     pub fn getNav (vg: *mut VTDGen) -> *mut VTDNav;
-    pub fn cloneNav (vn: *mut VTDNav) -> *mut VTDNav;
+    pub fn cloneNav_shim (vn: *mut VTDNav) -> *mut VTDNav;
     pub fn freeVTDNav_shim (vn: *mut VTDNav);
 
     // vtdNav.h
@@ -129,7 +129,7 @@ pub mod sys {
     /// The index of the element under the cursor. Can be used with `toString` to fetch the element name.
     pub fn getCurrentIndex_shim (vn: *mut VTDNav) -> c_int;
     /// Move the cursor to the element according to the direction constants If no such element, no position change and return false.
-    pub fn toElement (vn: *mut VTDNav, direction: Direction) -> Boolean;
+    pub fn toElement_shim (vn: *mut VTDNav, direction: Direction) -> Boolean;
     /// Move the cursor to the element according to the direction constants and the element name.
     /// If no such element, no position change and return false.
     /// "*" matches any element.
@@ -184,6 +184,11 @@ pub mod helpers {
   //use std::mem::size_of;
   use std::ptr::null;
   //use std::slice::from_raw_parts;
+
+  // TODO: Implement a proper encoder/decoder (or find a way to reuse one).
+  // cf. http://stackoverflow.com/questions/6240055/manually-converting-unicode-codepoints-into-utf-8-and-utf-16
+  // http://stackoverflow.com/questions/33642339/how-is-a-high-unicode-codepoint-expressed-as-two-codepoints
+  // http://stackoverflow.com/questions/38349372/convert-codepoint-to-utf-8-byte-array-in-java-using-shifting-operations
 
   /// Decodes a NIL-terminated `wchar_t` string into a UTF-8 Rust string. WIP.
   pub fn ucs2string<'a> (buf: &'a mut String, ucs: *const UCSChar, free: bool) -> &'a String {

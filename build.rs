@@ -51,7 +51,9 @@ fn main() {
         return exception_raised;}
 
       #include \"vtdNav.h\"
+      VTDNav* cloneNav_shim (VTDNav *vn) {return vn->__cloneNav(vn);}
       void freeVTDNav_shim (VTDNav *vn) {vn->__freeVTDNav(vn);};
+      Boolean toElement_shim (VTDNav *vn, navDir direction) {return vn->__toElement(vn,direction);}
       Boolean toElement2_shim (VTDNav *vn, navDir direction, UCSChar *en) {return vn->__toElement2 (vn, direction, en);}
       int getCurrentIndex_shim (VTDNav *vn) {return getCurrentIndex (vn);}
     ") .expect ("!write"); }
