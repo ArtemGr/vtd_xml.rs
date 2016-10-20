@@ -200,10 +200,10 @@ pub mod sys {
     pub fn is_errno_e2big() -> c_int;}}
 
 pub mod helpers {
-  use ::sys::{iconv_open_shim, iconv_shim, iconv_close_shim, is_errno_einval, is_errno_e2big, UCSChar, Iconv};
+  use ::sys::{iconv_open_shim, iconv_shim, iconv_close_shim, is_errno_e2big, UCSChar, Iconv};
   use libc::{self, size_t, c_void};
   use std::mem::{uninitialized, size_of};
-  use std::ptr::{copy, null};
+  use std::ptr::null;
   use std::str::from_utf8_unchecked;
 
   // TODO: Implement a proper encoder/decoder (or find a way to reuse one).
@@ -244,10 +244,7 @@ pub mod helpers {
       let rc = unsafe {iconv_shim (cd, &mut ucs_p, &mut ucs_len, &mut buf_p, &mut buf_len)};
       let mut finished = true;
       if rc == size_t::max_value() {
-        if unsafe {is_errno_einval()} == 1 {
-          unsafe {copy (ucs_p, buf.as_mut_ptr(), ucs_len)};
-          continue;
-        } else if unsafe {is_errno_e2big()} == 1 {  // `buf` is full.
+        if unsafe {is_errno_e2big()} == 1 {  // `buf` is full.
           finished = false;
         } else {panic! ("!iconv")}}
       let encoded_len = buf_p as usize - buf.as_ptr() as usize;
