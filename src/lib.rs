@@ -186,7 +186,7 @@ pub mod sys {
     pub fn vtd_try_catch_shim (cb: extern fn (*mut c_void, *mut c_void),
                                closure_pp: *mut c_void, panic_p: *mut c_void, ex: *mut VtdException) -> c_int;}
 
-    // --- iconv -------
+  // --- iconv -------
 
   pub type Iconv = *mut c_void;
   extern {
@@ -198,7 +198,7 @@ pub mod sys {
     pub fn iconv_close_shim (cd: Iconv) -> c_int;}}
 
 pub mod helpers {
-  use ::sys::{iconv_open_shim, iconv_shim, iconv_close_shim, UCSChar};
+  use ::sys::{iconv_open_shim, iconv_shim, iconv_close_shim, UCSChar, Iconv};
   use libc::{self, size_t, c_void};
   use std::mem::{uninitialized, size_of};
   use std::ptr::null;
@@ -208,6 +208,17 @@ pub mod helpers {
   // cf. http://stackoverflow.com/questions/6240055/manually-converting-unicode-codepoints-into-utf-8-and-utf-16
   // http://stackoverflow.com/questions/33642339/how-is-a-high-unicode-codepoint-expressed-as-two-codepoints
   // http://stackoverflow.com/questions/38349372/convert-codepoint-to-utf-8-byte-array-in-java-using-shifting-operations
+
+  struct IconvSync (Iconv);
+  unsafe impl Sync for IconvSync {}
+  impl Drop for IconvSync {
+    fn drop (&mut self) {
+      if unsafe {iconv_close_shim (self.0)} != 0 {panic! ("!iconv_close")}}}
+
+  lazy_static! {static ref WCHAR_T_TO_UTF_8: IconvSync = {
+    let cd = unsafe {iconv_open_shim ("UTF-8\0".as_ptr(), "WCHAR_T\0".as_ptr())};
+    if cd as size_t == size_t::max_value() {panic! ("!iconv_open")}
+    IconvSync (cd)};}
 
   /// Decodes a NIL-terminated `wchar_t` string into a UTF-8 Rust string. WIP.
   pub fn ucs2string<'a> (sbuf: &'a mut String, ucs: *const UCSChar, free: bool) -> &'a String {
@@ -221,10 +232,7 @@ pub mod helpers {
       wide_len += 1;}
 
     // https://www.gnu.org/software/libc/manual/html_node/iconv-Examples.html
-    // TODO: Cache the encoder!
-    let cd = unsafe {iconv_open_shim ("UTF-8\0".as_ptr(), "WCHAR_T\0".as_ptr())};
-    if cd as size_t == size_t::max_value() {panic! ("!iconv_open")}
-
+    let cd = WCHAR_T_TO_UTF_8.0;
     let mut buf: [u8; 4096] = unsafe {uninitialized()};
     let mut ucs_p: *const u8 = ucs as *const u8;
     let mut ucs_len = wide_len as usize * size_of::<UCSChar>();
@@ -236,8 +244,6 @@ pub mod helpers {
     let encoded_len = buf_p as usize - buf.as_ptr() as usize;
     sbuf.reserve (encoded_len);
     sbuf.push_str (unsafe {from_utf8_unchecked (&buf[0..encoded_len])});
-
-    if unsafe {iconv_close_shim (cd)} != 0 {panic! ("!iconv_close")}
 
     if free {unsafe {libc::free (ucs as *mut c_void)}}
     sbuf}
