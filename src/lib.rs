@@ -190,13 +190,15 @@ pub mod sys {
 
   pub type Iconv = *mut c_void;
   extern {
-    pub fn libiconv_open (tocode: *const u8, fromcode: *const u8) -> Iconv;
-    pub fn libiconv (cd: Iconv, inbuf: *mut *const u8, inbytesleft: *mut size_t,
-                     outbuf: *mut *mut u8, outbytesleft: *mut size_t) -> size_t;
-    pub fn libiconv_close (cd: Iconv) -> c_int;}}
+    pub fn iconv_open_shim (tocode: *const u8, fromcode: *const u8) -> Iconv;
+    /// Convert at most *INBYTESLEFT bytes from *INBUF according to the code conversion algorithm specified by CD
+    /// and place up to OUTBYTESLEFT bytes in buffer at *OUTBUF.
+    pub fn iconv_shim (cd: Iconv, inbuf: *mut *const u8, inbytesleft: *mut size_t,
+                       outbuf: *mut *mut u8, outbytesleft: *mut size_t) -> size_t;
+    pub fn iconv_close_shim (cd: Iconv) -> c_int;}}
 
 pub mod helpers {
-  use ::sys::{libiconv_open, libiconv, libiconv_close, UCSChar};
+  use ::sys::{iconv_open_shim, iconv_shim, iconv_close_shim, UCSChar};
   use libc::{self, size_t, c_void};
   use std::mem::{uninitialized, size_of};
   use std::ptr::null;
@@ -220,7 +222,7 @@ pub mod helpers {
 
     // https://www.gnu.org/software/libc/manual/html_node/iconv-Examples.html
     // TODO: Cache the encoder!
-    let cd = unsafe {libiconv_open ("UTF-8\0".as_ptr(), "WCHAR_T\0".as_ptr())};
+    let cd = unsafe {iconv_open_shim ("UTF-8\0".as_ptr(), "WCHAR_T\0".as_ptr())};
     if cd as size_t == size_t::max_value() {panic! ("!iconv_open")}
 
     let mut buf: [u8; 4096] = unsafe {uninitialized()};
@@ -228,14 +230,14 @@ pub mod helpers {
     let mut ucs_len = wide_len as usize * size_of::<UCSChar>();
     let mut buf_p: *mut u8 = buf.as_mut_ptr();
     let mut buf_len = 4096;
-    let rc = unsafe {libiconv (cd, &mut ucs_p, &mut ucs_len, &mut buf_p, &mut buf_len)};
+    let rc = unsafe {iconv_shim (cd, &mut ucs_p, &mut ucs_len, &mut buf_p, &mut buf_len)};
     if rc == size_t::max_value() {panic! ("!iconv")}
 
     let encoded_len = buf_p as usize - buf.as_ptr() as usize;
     sbuf.reserve (encoded_len);
     sbuf.push_str (unsafe {from_utf8_unchecked (&buf[0..encoded_len])});
 
-    if unsafe {libiconv_close (cd)} != 0 {panic! ("!iconv_close")}
+    if unsafe {iconv_close_shim (cd)} != 0 {panic! ("!iconv_close")}
 
     if free {unsafe {libc::free (ucs as *mut c_void)}}
     sbuf}
@@ -413,5 +415,5 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
         let text = unsafe {getText (vn)};
         assert! (text != -1);
         assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Стар");});
-      unsafe {freeVTDNav_shim (vn)};
+      //unsafe {freeVTDNav_shim (vn)};  // SEGVs in `free(vn->h1);`
       unsafe {freeVTDGen (vg)};}) .expect ("!unicode");}}

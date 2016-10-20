@@ -58,6 +58,13 @@ fn main() {
       Boolean toElement_shim (VTDNav *vn, navDir direction) {return vn->__toElement (vn, direction);}
       Boolean toElement2_shim (VTDNav *vn, navDir direction, UCSChar *en) {return vn->__toElement2 (vn, direction, en);}
       int getCurrentIndex_shim (VTDNav *vn) {return getCurrentIndex (vn);}
+
+      // We need the shims because the MSYS2 version of iconv uses the 'lib' prefix, e.g. 'libiconv_open' instead of 'iconv_open'.
+      #include <iconv.h>
+      iconv_t iconv_open_shim (const char *tocode, const char *fromcode) {return iconv_open (tocode, fromcode);}
+      size_t iconv_shim (iconv_t cd, char** inbuf, size_t* inbytesleft, char** outbuf, size_t* outbytesleft) {
+        return iconv (cd, inbuf, inbytesleft, outbuf, outbytesleft);}
+      int iconv_close_shim (iconv_t cd) {return iconv_close (cd);}
     ") .expect ("!write"); }
   cmd (&sources, "gcc -ggdb -fPIC \
     -Og -fomit-frame-pointer -fforce-addr -march=core2 \
