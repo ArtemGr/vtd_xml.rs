@@ -119,7 +119,11 @@ pub mod sys {
     /// Returns the VTDNav object after parsing, it also cleans 
     /// internal state so VTDGen can process the next file.
     pub fn getNav (vg: *mut VTDGen) -> *mut VTDNav;
+    /// Clones the cursor.
+    /// With ximpleware-2.12-c it doesn't seem to work. Use `getCurrentIndex_shim` and `recoverNode_shim` instead.
+    /// (And I haven't tried `duplicateNav_shim` with `recoverNode_shim` yet).
     pub fn cloneNav_shim (vn: *mut VTDNav) -> *mut VTDNav;
+    pub fn duplicateNav_shim (vn: *mut VTDNav) -> *mut VTDNav;
     /// This method takes a vtd index, and recover its correspondin node position, the index can only be of node type element,
     /// document, attribute name, attribute value or character data, or CDATA. */
     pub fn recoverNode_shim (vn: *mut VTDNav, index: c_int);

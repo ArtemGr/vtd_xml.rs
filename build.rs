@@ -52,6 +52,7 @@ fn main() {
 
       #include \"vtdNav.h\"
       VTDNav* cloneNav_shim (VTDNav *vn) {return vn->__cloneNav(vn);}
+      VTDNav* duplicateNav_shim (VTDNav *vn) {return vn->__duplicateNav (vn);}
       void recoverNode_shim (VTDNav *vn, int index) {vn->__recoverNode (vn, index);}
       void freeVTDNav_shim (VTDNav *vn) {vn->__freeVTDNav(vn);};
       Boolean toElement_shim (VTDNav *vn, navDir direction) {return vn->__toElement (vn, direction);}
