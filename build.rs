@@ -65,6 +65,7 @@ fn main() {
       size_t iconv_shim (iconv_t cd, char** inbuf, size_t* inbytesleft, char** outbuf, size_t* outbytesleft) {
         return iconv (cd, inbuf, inbytesleft, outbuf, outbytesleft);}
       int iconv_close_shim (iconv_t cd) {return iconv_close (cd);}
+      #include <errno.h>
       int is_errno_einval() {return errno == EINVAL;}
       int is_errno_e2big() {return errno == E2BIG;}
     ") .expect ("!write"); }
