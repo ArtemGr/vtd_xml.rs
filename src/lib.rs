@@ -195,13 +195,15 @@ pub mod sys {
     /// and place up to OUTBYTESLEFT bytes in buffer at *OUTBUF.
     pub fn iconv_shim (cd: Iconv, inbuf: *mut *const u8, inbytesleft: *mut size_t,
                        outbuf: *mut *mut u8, outbytesleft: *mut size_t) -> size_t;
-    pub fn iconv_close_shim (cd: Iconv) -> c_int;}}
+    pub fn iconv_close_shim (cd: Iconv) -> c_int;
+    pub fn is_errno_einval() -> c_int;
+    pub fn is_errno_e2big() -> c_int;}}
 
 pub mod helpers {
-  use ::sys::{iconv_open_shim, iconv_shim, iconv_close_shim, UCSChar, Iconv};
+  use ::sys::{iconv_open_shim, iconv_shim, iconv_close_shim, is_errno_einval, is_errno_e2big, UCSChar, Iconv};
   use libc::{self, size_t, c_void};
   use std::mem::{uninitialized, size_of};
-  use std::ptr::null;
+  use std::ptr::{copy, null};
   use std::str::from_utf8_unchecked;
 
   // TODO: Implement a proper encoder/decoder (or find a way to reuse one).
@@ -233,17 +235,26 @@ pub mod helpers {
 
     // https://www.gnu.org/software/libc/manual/html_node/iconv-Examples.html
     let cd = WCHAR_T_TO_UTF_8.0;
-    let mut buf: [u8; 4096] = unsafe {uninitialized()};
+    let mut buf: [u8; 1024] = unsafe {uninitialized()};
     let mut ucs_p: *const u8 = ucs as *const u8;
     let mut ucs_len = wide_len as usize * size_of::<UCSChar>();
-    let mut buf_p: *mut u8 = buf.as_mut_ptr();
-    let mut buf_len = 4096;
-    let rc = unsafe {iconv_shim (cd, &mut ucs_p, &mut ucs_len, &mut buf_p, &mut buf_len)};
-    if rc == size_t::max_value() {panic! ("!iconv")}
-
-    let encoded_len = buf_p as usize - buf.as_ptr() as usize;
-    sbuf.reserve (encoded_len);
-    sbuf.push_str (unsafe {from_utf8_unchecked (&buf[0..encoded_len])});
+    loop {
+      let mut buf_p: *mut u8 = buf.as_mut_ptr();
+      let mut buf_len = 1024;
+      let rc = unsafe {iconv_shim (cd, &mut ucs_p, &mut ucs_len, &mut buf_p, &mut buf_len)};
+      let mut finished = true;
+      if rc == size_t::max_value() {
+        if unsafe {is_errno_einval()} == 1 {
+          unsafe {copy (ucs_p, buf.as_mut_ptr(), ucs_len)};
+          continue;
+        } else if unsafe {is_errno_e2big()} == 1 {  // `buf` is full.
+          finished = false;
+        } else {panic! ("!iconv")}}
+      let encoded_len = buf_p as usize - buf.as_ptr() as usize;
+      let encoded = unsafe {from_utf8_unchecked (&buf[0..encoded_len])};
+      sbuf.reserve (encoded_len);
+      sbuf.push_str (encoded);
+      if finished {break}}
 
     if free {unsafe {libc::free (ucs as *mut c_void)}}
     sbuf}
@@ -368,7 +379,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
             2 => {assert_eq! (name, "dc:date"); assert_eq! (text, "2004-06-14T00:00:00Z")},
             x => panic! ("num is {}", x)}}}
       assert_eq! (num, 2);
-      unsafe {freeVTDNav_shim (vn)};
+      //unsafe {freeVTDNav_shim (vn)};  // Often crashes on Windows.
       unsafe {freeVTDGen (vg)};
       unsafe {freeAutoPilot (ap)};
     }) .expect ("!rss_reader");}
@@ -390,7 +401,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
       let text = unsafe {getText (vn)};
       assert! (text != -1);
       assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Smokey");
-      unsafe {freeVTDNav_shim (vn)};
+      //unsafe {freeVTDNav_shim (vn)};  // Often crashes on Windows.
       unsafe {freeVTDGen (vg)};
     }) .expect ("!walk");}
 
