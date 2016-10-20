@@ -72,4 +72,6 @@ fn main() {
     decoder.o XMLModifier.o nodeRecorder.o indexHandler.o bookMark.o elementFragmentNs.o transcoder.o textIter.o variableExpr.o cachedExpr.o");
 
   println! ("cargo:rustc-link-lib=static=vtdxml");
+  if target.ends_with ("-windows-gnu") {
+    println! ("cargo:rustc-link-lib=iconv");}
   println! ("cargo:rustc-link-search=native={}", sources.to_string_lossy());}

@@ -12,6 +12,7 @@ crate-type = ["rlib"]
 doctest = false 
 
 [dependencies]
+antidote = "1"
 encoding = "0.2"
 lazy_static = "0.2"
 libc = "0.2"

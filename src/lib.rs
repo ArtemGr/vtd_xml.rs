@@ -1,4 +1,4 @@
-// [build] cargo test -- --nocapture
+// [build] cargo test unicode -- --nocapture
 
 /*
  * Copyright (C) 2016 Artem Grinblat
@@ -20,11 +20,13 @@
 
 #![feature(test)]
 
+extern crate antidote;
 extern crate encoding;
 #[macro_use] extern crate lazy_static;
 extern crate libc;
 extern crate test;
 
+use antidote::Mutex;
 use libc::c_void;
 use std::any::Any;
 use std::ffi::CStr;
@@ -40,7 +42,7 @@ use std::ptr::null;
 
 /// Handmade FFI bindings to the C library (ximpleware_2.12).
 pub mod sys {
-  use libc::{c_int, c_char, c_void, wchar_t};
+  use libc::{c_int, c_char, c_void, wchar_t, size_t};
   use std::default::Default;
   use std::mem::zeroed;
 
@@ -120,8 +122,9 @@ pub mod sys {
     /// internal state so VTDGen can process the next file.
     pub fn getNav (vg: *mut VTDGen) -> *mut VTDNav;
     /// Clones the cursor.
-    /// With ximpleware-2.12-c it doesn't seem to work. Use `getCurrentIndex_shim` and `recoverNode_shim` instead.
-    /// (And I haven't tried `duplicateNav_shim` with `recoverNode_shim` yet).
+    /// With ximpleware-2.12-c it doesn't seem to work (the cloned cursor isn't navigable).
+    /// Use `getCurrentIndex_shim` and `recoverNode_shim` instead.
+    /// Or `duplicateNav_shim` with `recoverNode_shim`.
     pub fn cloneNav_shim (vn: *mut VTDNav) -> *mut VTDNav;
     pub fn duplicateNav_shim (vn: *mut VTDNav) -> *mut VTDNav;
     /// This method takes a vtd index, and recover its correspondin node position, the index can only be of node type element,
@@ -181,16 +184,23 @@ pub mod sys {
 
     /// Returns 0 on success and 1 if VTD exception was raised.
     pub fn vtd_try_catch_shim (cb: extern fn (*mut c_void, *mut c_void),
-                               closure_pp: *mut c_void, panic_p: *mut c_void, ex: *mut VtdException) -> c_int;}}
+                               closure_pp: *mut c_void, panic_p: *mut c_void, ex: *mut VtdException) -> c_int;}
+
+    // --- iconv -------
+
+  pub type Iconv = *mut c_void;
+  extern {
+    pub fn libiconv_open (tocode: *const u8, fromcode: *const u8) -> Iconv;
+    pub fn libiconv (cd: Iconv, inbuf: *mut *const u8, inbytesleft: *mut size_t,
+                     outbuf: *mut *mut u8, outbytesleft: *mut size_t) -> size_t;
+    pub fn libiconv_close (cd: Iconv) -> c_int;}}
 
 pub mod helpers {
-  use ::sys::UCSChar;
-  //use encoding::{Encoding, DecoderTrap};
-  //use encoding::all::UTF_16LE;
-  use libc;
-  //use std::mem::size_of;
+  use ::sys::{libiconv_open, libiconv, libiconv_close, UCSChar};
+  use libc::{self, size_t, c_void};
+  use std::mem::{uninitialized, size_of};
   use std::ptr::null;
-  //use std::slice::from_raw_parts;
+  use std::str::from_utf8_unchecked;
 
   // TODO: Implement a proper encoder/decoder (or find a way to reuse one).
   // cf. http://stackoverflow.com/questions/6240055/manually-converting-unicode-codepoints-into-utf-8-and-utf-16
@@ -198,17 +208,37 @@ pub mod helpers {
   // http://stackoverflow.com/questions/38349372/convert-codepoint-to-utf-8-byte-array-in-java-using-shifting-operations
 
   /// Decodes a NIL-terminated `wchar_t` string into a UTF-8 Rust string. WIP.
-  pub fn ucs2string<'a> (buf: &'a mut String, ucs: *const UCSChar, free: bool) -> &'a String {
-    buf.clear();
-    if ucs == null() {return buf}
-    let mut idx = 0;
+  pub fn ucs2string<'a> (sbuf: &'a mut String, ucs: *const UCSChar, free: bool) -> &'a String {
+    sbuf.clear();
+    if ucs == null() {return sbuf}
+
+    let mut wide_len = 0;
     loop {
-      let ch = unsafe {*ucs.offset (idx)};
+      let ch = unsafe {*ucs.offset (wide_len)};
       if ch == 0 {break}
-      buf.push (ch as u8 as char);
-      idx += 1;}
-    if free {unsafe {libc::free (ucs as *mut libc::c_void)}}
-    buf}
+      wide_len += 1;}
+
+    // https://www.gnu.org/software/libc/manual/html_node/iconv-Examples.html
+    // TODO: Cache the encoder!
+    let cd = unsafe {libiconv_open ("UTF-8\0".as_ptr(), "WCHAR_T\0".as_ptr())};
+    if cd as size_t == size_t::max_value() {panic! ("!iconv_open")}
+
+    let mut buf: [u8; 4096] = unsafe {uninitialized()};
+    let mut ucs_p: *const u8 = ucs as *const u8;
+    let mut ucs_len = wide_len as usize * size_of::<UCSChar>();
+    let mut buf_p: *mut u8 = buf.as_mut_ptr();
+    let mut buf_len = 4096;
+    let rc = unsafe {libiconv (cd, &mut ucs_p, &mut ucs_len, &mut buf_p, &mut buf_len)};
+    if rc == size_t::max_value() {panic! ("!iconv")}
+
+    let encoded_len = buf_p as usize - buf.as_ptr() as usize;
+    sbuf.reserve (encoded_len);
+    sbuf.push_str (unsafe {from_utf8_unchecked (&buf[0..encoded_len])});
+
+    if unsafe {libiconv_close (cd)} != 0 {panic! ("!iconv_close")}
+
+    if free {unsafe {libc::free (ucs as *mut c_void)}}
+    sbuf}
 
   /// Converts a UTF-8 string into a NIL-terminated `wchar_t` string. WIP.
   pub fn str2ucs<'a> (buf: &'a mut Vec<UCSChar>, s: &str) -> &'a Vec<UCSChar> {
@@ -227,6 +257,11 @@ pub struct VtdError {
 impl Display for VtdError {
   fn fmt (&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {write! (fmt, "{:?}", *self)}}
 
+// C version *should* be thread-safe, but I seem to be seing an EOF issue when using VTD from multiple threads.
+// "Parse exception in getChar", "Premature EOF reached, XML document incomplete".
+// With a global lock it never happens.
+lazy_static! {static ref LOCK: Mutex<()> = Mutex::new (());}
+
 /// Catches VTD-XML exceptions, returning them as a Rust error.
 ///
 /// Rust panics in the `cb` are propagated.
@@ -236,17 +271,21 @@ pub fn vtd_catch (mut cb: &mut FnMut()) -> Result<(), VtdError> {
   let mut ex = sys::VtdException::default();
   let mut panic = String::new();
   let panic_p: *mut c_void = unsafe {transmute (&mut panic)};
+  let lock = LOCK.lock();
   if unsafe {::sys::vtd_try_catch_shim (::vtd_xml_try_catch_rust_shim, closure_pp, panic_p, &mut ex)} == 0 {
     if !panic.is_empty() {panic! ("vtd_catch] {}", panic)}
+    test::black_box (&lock);
     Ok (())
   } else {
-    Err (VtdError {
+    let err = VtdError {
       et: ex.et,
       subtype: ex.subtype as i32,
       msg: if ex.msg == null() {String::new()} else {
         unsafe {CStr::from_ptr (ex.msg as *mut i8)} .to_string_lossy().into_owned()},
       sub_msg: if ex.sub_msg == null() {String::new()} else {
-        unsafe {CStr::from_ptr (ex.sub_msg as *mut i8)} .to_string_lossy().into_owned()}})}}
+        unsafe {CStr::from_ptr (ex.sub_msg as *mut i8)} .to_string_lossy().into_owned()}};
+    test::black_box (&lock);
+    Err (err)}}
 
 /// Useful with panic handlers.
 fn any_to_str<'a> (message: &'a Box<Any + Send + 'static>) -> Option<&'a str> {
@@ -264,8 +303,6 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
       let panic_buf: &mut String = unsafe {transmute (panic_p)};
       panic_buf.push_str (message);}}
 
-// TODO: Add benchmarks in order to stress-test the library and the wrapper.
-
 #[cfg(test)] mod tests {
   use ::sys::*;
   use ::helpers::*;
@@ -273,14 +310,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
   use libc::{self, c_int};
   use std;
   use std::panic::catch_unwind;
-  use std::sync::Mutex;
-  use test::Bencher;
-
-  // C version *should* be thread-safe, but I seem to be seing an EOF issue when using VTD from multiple threads.
-  // "Parse exception in getChar", "Premature EOF reached, XML document incomplete".
-  // With a global lock it never happens.
-  lazy_static! {
-    static ref LOCK: Mutex<()> = Mutex::new (());}
+  use test::Bencher;  // cf. https://github.com/rust-lang/rfcs/issues/1484
 
   #[test] fn str2ucs_test() {
     let mut to_ucs = Vec::new();
@@ -289,7 +319,6 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
     assert_eq! (ucs2string (&mut from_ucs, str2ucs (&mut to_ucs, "foo") .as_ptr(), false), "foo");}
 
   #[test] fn rss_reader() {  // http://vtd-xml.sourceforge.net/codeSample/cs2.html, RSSReader.c
-    let _lock = LOCK.lock().expect ("!lock");
     vtd_catch (&mut || {
       let vg = unsafe {createVTDGen()};
       // http://vtd-xml.sourceforge.net/codeSample/servers.xml
@@ -337,7 +366,6 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
     }) .expect ("!rss_reader");}
 
   #[test] fn walk() {
-    let _lock = LOCK.lock().expect ("!lock");
     vtd_catch (&mut || {
       let xml = "<foo><bar surname=\"Stover\">Smokey</bar></foo>";
       let vg = unsafe {createVTDGen()};
@@ -354,11 +382,12 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
       let text = unsafe {getText (vn)};
       assert! (text != -1);
       assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Smokey");
-  }) .expect ("!walk");}
+      unsafe {freeVTDNav_shim (vn)};
+      unsafe {freeVTDGen (vg)};
+    }) .expect ("!walk");}
 
   #[bench] fn panic (bencher: &mut Bencher) {  // See if `vtd_catch` would propagate the Rust panics from the closure.
     std::panic::set_hook (Box::new (|_| ()));  // Prevents the panics from cussing to the stderr.
-    let _lock = LOCK.lock().expect ("!lock");
     bencher.iter (|| {
       match catch_unwind (|| {
         vtd_catch (&mut || panic! ("woot")) .expect ("!vtd_catch");}) {
@@ -366,5 +395,23 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
           Err (panic) => {
             let message = ::any_to_str (&panic) .expect ("!message");
             assert_eq! (message, "vtd_catch] woot");}}});
-    let _ = std::panic::take_hook();  // Restore the panic handler.
-} }
+    let _ = std::panic::take_hook();}  // Restore the panic handler.
+
+  #[bench] fn unicode (bencher: &mut Bencher) {
+    let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><foo arg=\"Рок\">Стар</foo>";
+    vtd_catch (&mut || {
+      let vg = unsafe {createVTDGen()};
+      unsafe {setDoc (vg, xml.as_ptr(), xml.len() as c_int)};
+      unsafe {parse (vg, Bool::FALSE)};
+      let vn = unsafe {getNav (vg)};
+      let mut to_ucs = Vec::new();
+      let mut from_ucs = String::new();
+      bencher.iter (|| {
+        let arg = unsafe {getAttrVal (vn, str2ucs (&mut to_ucs, "arg") .as_ptr())};
+        assert! (arg != -1);
+        assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, arg)}, true), "Рок");
+        let text = unsafe {getText (vn)};
+        assert! (text != -1);
+        assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Стар");});
+      unsafe {freeVTDNav_shim (vn)};
+      unsafe {freeVTDGen (vg)};}) .expect ("!unicode");}}
