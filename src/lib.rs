@@ -1,4 +1,4 @@
-// [build] cargo test unicode -- --nocapture
+// [build] cargo test error -- --nocapture
 
 /*
  * Copyright (C) 2016 Artem Grinblat
@@ -29,6 +29,7 @@ extern crate test;
 use antidote::Mutex;
 use libc::c_void;
 use std::any::Any;
+use std::error::Error;
 use std::ffi::CStr;
 use std::fmt::{self, Display};
 use std::mem::transmute;
@@ -183,8 +184,7 @@ pub mod sys {
     // shims.c
 
     /// Returns 0 on success and 1 if VTD exception was raised.
-    pub fn vtd_try_catch_shim (cb: extern fn (*mut c_void, *mut c_void),
-                               closure_pp: *mut c_void, panic_p: *mut c_void, ex: *mut VtdException) -> c_int;}
+    pub fn vtd_try_catch_shim (cb: extern fn (*mut c_void), dugout: *mut c_void, ex: *mut VtdException) -> c_int;}
 
   // --- iconv -------
 
@@ -272,26 +272,39 @@ pub struct VtdError {
   pub sub_msg: String}
 impl Display for VtdError {
   fn fmt (&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {write! (fmt, "{:?}", *self)}}
+impl Error for VtdError {
+  fn description (&self) -> &str {&self.msg}}
 
 // C version *should* be thread-safe, but I seem to be seing an EOF issue when using VTD from multiple threads.
 // "Parse exception in getChar", "Premature EOF reached, XML document incomplete".
 // With a global lock it never happens.
 lazy_static! {static ref LOCK: Mutex<()> = Mutex::new (());}
 
+struct Dugout<'a> {
+  closure: &'a mut FnMut() -> Result<(), Box<Error>>,
+  panic_message: String,
+  rc: Result<(), Box<Error>>}
+
 /// Catches VTD-XML exceptions, returning them as a Rust error.
 ///
 /// Rust panics in the `cb` are propagated.
-pub fn vtd_catch (mut cb: &mut FnMut()) -> Result<(), VtdError> {
+pub fn vtd_catch (mut cb: &mut FnMut() -> Result<(), Box<Error>>) -> Result<(), Box<Error>> {
   // http://stackoverflow.com/a/38997480/257568.
-  let closure_pp: *mut c_void = unsafe {transmute (&mut cb)};
+  let mut dugout = Dugout {
+    closure: cb,
+    panic_message: String::new(),
+    rc: Ok(())};
+  let dugout_p: *mut c_void = unsafe {transmute (&mut dugout)};
   let mut ex = sys::VtdException::default();
-  let mut panic = String::new();
-  let panic_p: *mut c_void = unsafe {transmute (&mut panic)};
+
   let lock = LOCK.lock();
-  if unsafe {::sys::vtd_try_catch_shim (::vtd_xml_try_catch_rust_shim, closure_pp, panic_p, &mut ex)} == 0 {
-    if !panic.is_empty() {panic! ("vtd_catch] {}", panic)}
-    test::black_box (&lock);
-    Ok (())
+  let rc = unsafe {::sys::vtd_try_catch_shim (::vtd_xml_try_catch_rust_shim, dugout_p, &mut ex)};
+  test::black_box (&lock);
+
+  if !dugout.panic_message.is_empty() {panic! ("vtd_catch] {}", dugout.panic_message)}
+
+  if rc == 0 {
+    dugout.rc
   } else {
     let err = VtdError {
       et: ex.et,
@@ -301,7 +314,7 @@ pub fn vtd_catch (mut cb: &mut FnMut()) -> Result<(), VtdError> {
       sub_msg: if ex.sub_msg == null() {String::new()} else {
         unsafe {CStr::from_ptr (ex.sub_msg as *mut i8)} .to_string_lossy().into_owned()}};
     test::black_box (&lock);
-    Err (err)}}
+    Err (Box::new (err))}}
 
 /// Useful with panic handlers.
 fn any_to_str<'a> (message: &'a Box<Any + Send + 'static>) -> Option<&'a str> {
@@ -311,13 +324,15 @@ fn any_to_str<'a> (message: &'a Box<Any + Send + 'static>) -> Option<&'a str> {
 
 /// Called from inside a C function (`vtd_try_catch_shim`) in order to execute some Rust code while catching any VTD-XML exceptions.
 #[no_mangle] #[doc(hidden)]
-pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p: *mut c_void) {
-  if let Err (panic) = catch_unwind (|| {
-    let closure: &mut &mut FnMut() = unsafe {transmute (closure_pp)};
-    closure();}) {
-      let message = match any_to_str (&panic) {Some (s) => s, None => "panic in vtd_catch"};
-      let panic_buf: &mut String = unsafe {transmute (panic_p)};
-      panic_buf.push_str (message);}}
+pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
+  let catch_rc = catch_unwind (|| {
+    let dugout: &mut Dugout = unsafe {transmute (dugout)};
+    dugout.rc = (dugout.closure)();});
+
+  if let Err (panic) = catch_rc {
+    let message = match any_to_str (&panic) {Some (s) => s, None => "panic in vtd_catch"};
+    let dugout: &mut Dugout = unsafe {transmute (dugout)};
+    dugout.panic_message.push_str (message);}}
 
 #[cfg(test)] mod tests {
   use ::sys::*;
@@ -379,7 +394,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
       //unsafe {freeVTDNav_shim (vn)};  // Often crashes on Windows.
       unsafe {freeVTDGen (vg)};
       unsafe {freeAutoPilot (ap)};
-    }) .expect ("!rss_reader");}
+      Ok(())}) .expect ("!rss_reader");}
 
   #[test] fn walk() {
     vtd_catch (&mut || {
@@ -400,7 +415,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
       assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Smokey");
       //unsafe {freeVTDNav_shim (vn)};  // Often crashes on Windows.
       unsafe {freeVTDGen (vg)};
-    }) .expect ("!walk");}
+      Ok(())}) .expect ("!walk");}
 
   #[bench] fn panic (bencher: &mut Bencher) {  // See if `vtd_catch` would propagate the Rust panics from the closure.
     std::panic::set_hook (Box::new (|_| ()));  // Prevents the panics from cussing to the stderr.
@@ -412,6 +427,12 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
             let message = ::any_to_str (&panic) .expect ("!message");
             assert_eq! (message, "vtd_catch] woot");}}});
     let _ = std::panic::take_hook();}  // Restore the panic handler.
+
+  #[bench] fn error (bencher: &mut Bencher) {  // See if `vtd_catch` would propagate Rust errors from the closure.
+    bencher.iter (|| {
+      let rc = vtd_catch (&mut || Err (From::from ("woot")));
+      let err = rc.err().expect ("!err");
+      assert_eq! (err.description(), "woot");})}
 
   #[bench] fn unicode (bencher: &mut Bencher) {
     let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><foo arg=\"Рок\">Стар</foo>";
@@ -430,4 +451,5 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (closure_pp: *mut c_void, panic_p:
         assert! (text != -1);
         assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Стар");});
       //unsafe {freeVTDNav_shim (vn)};  // SEGVs in `free(vn->h1);`
-      unsafe {freeVTDGen (vg)};}) .expect ("!unicode");}}
+      unsafe {freeVTDGen (vg)};
+      Ok(())}) .expect ("!unicode");}}

@@ -45,9 +45,9 @@ fn main() {
       #include \"customTypes.h\"
       _thread struct exception_context the_exception_context[1];
 
-      int vtd_try_catch_shim (void (*rust_cb) (void*, void*), void* closure_pp, void* panic_p, exception* ex_out) {
+      int vtd_try_catch_shim (void (*rust_cb) (void*), void* dugout, exception* ex_out) {
         exception e; int exception_raised = 0;
-        Try {rust_cb (closure_pp, panic_p);} Catch (e) {exception_raised = 1; if (ex_out) *ex_out = e;}
+        Try {rust_cb (dugout);} Catch (e) {exception_raised = 1; if (ex_out) *ex_out = e;}
         return exception_raised;}
 
       #include \"vtdNav.h\"
