@@ -18,6 +18,8 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
+// ^^^ Using GPL in order to be compatible with the VTD-XML license. ^^^
+
 #![feature(test)]
 
 extern crate antidote;
@@ -171,15 +173,19 @@ pub mod sys {
     pub fn evalXPath (ap: *mut AutoPilot) -> c_int;
     /// Convert a token at the given index to a String, (entities and char references resolved).
     /// An attribute name or an element name will get the UCS2 string of qualified name.
-    pub fn toString (vn: *mut VTDNav, index: c_int) -> *mut UCSChar;
+    pub fn toString (vn: *const VTDNav, index: c_int) -> *mut UCSChar;
+    /// Convert a token at the given index to a String.
+    /// Built-in entity and char references not resolved.
+    /// Entities and char references not expanded.
+    pub fn toRawString (vn: *const VTDNav, index: c_int) -> *mut UCSChar;
     /// This function returns of the token index of the type character data or CDATA.
     /// Notice that it is intended to support data orient XML (not mixed-content XML).
-    pub fn getText (vn: *mut VTDNav) -> c_int;
+    pub fn getText (vn: *const VTDNav) -> c_int;
     /// This method normalizes a token into a string in a way that resembles DOM.
     /// The leading and trailing white space characters will be stripped.
     /// The entity and character references will be resolved.
     /// Multiple whitespaces char will be collapsed into one.
-    pub fn toNormalizedString (vn: *mut VTDNav, index: c_int) -> *mut UCSChar;
+    pub fn toNormalizedString (vn: *const VTDNav, index: c_int) -> *mut UCSChar;
 
     // shims.c
 
@@ -199,6 +205,7 @@ pub mod sys {
     pub fn is_errno_einval() -> c_int;
     pub fn is_errno_e2big() -> c_int;}}
 
+/// Various utility functions.
 pub mod helpers {
   use ::sys::{iconv_open_shim, iconv_shim, iconv_close_shim, is_errno_e2big, UCSChar, Iconv};
   use libc::{self, size_t, c_void};
@@ -222,7 +229,12 @@ pub mod helpers {
     if cd as size_t == size_t::max_value() {panic! ("!iconv_open")}
     IconvSync (cd)};}
 
-  /// Decodes a NIL-terminated `wchar_t` string into a UTF-8 Rust string. WIP.
+  /// Uses libiconv to decode a NIL-terminated `wchar_t` string into a UTF-8 Rust string.
+  ///
+  /// * `sbuf` - The buffer is cleared and filled with the decoded UTF-8 bytes.
+  /// * `ucs` - VTD-XML functions, such as `toString`, tend to return a `malloc`-allocated `UCSChar` strings.
+  ///           Though it's not necessarily in UCS as it follows the platform-specific `wchar_t` encoding.
+  /// * `free` - Whether to `free` the `ucs`. Most strings returned by VTD-XML need being `free`ed.
   pub fn ucs2string<'a> (sbuf: &'a mut String, ucs: *const UCSChar, free: bool) -> &'a String {
     sbuf.clear();
     if ucs == null() {return sbuf}
@@ -407,9 +419,11 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
       let mut from_ucs = String::new();
       assert! (unsafe {toElement2_shim (vn, Direction::FirstChild, str2ucs (&mut to_ucs, "bar") .as_ptr())} == Bool::TRUE);
       assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, getCurrentIndex_shim (vn))}, true), "bar");
+      assert_eq! (ucs2string (&mut from_ucs, unsafe {toRawString (vn, getCurrentIndex_shim (vn))}, true), "bar");
       let surname = unsafe {getAttrVal (vn, str2ucs (&mut to_ucs, "surname") .as_ptr())};
       assert! (surname != -1);
       assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, surname)}, true), "Stover");
+      assert_eq! (ucs2string (&mut from_ucs, unsafe {toRawString (vn, surname)}, true), "Stover");
       let text = unsafe {getText (vn)};
       assert! (text != -1);
       assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Smokey");
