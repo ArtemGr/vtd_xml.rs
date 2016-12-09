@@ -1,5 +1,3 @@
-// [build] cargo test error -- --nocapture
-
 /*
  * Copyright (C) 2016 Artem Grinblat
  *
@@ -20,23 +18,29 @@
 
 // ^^^ Using GPL in order to be compatible with the VTD-XML license. ^^^
 
+// TODO: Consider using https://github.com/bluss/bencher
 #![feature(test)]
 
 extern crate antidote;
 extern crate encoding;
+#[macro_use] extern crate gstuff;
 #[macro_use] extern crate lazy_static;
 extern crate libc;
+extern crate memmap;
 extern crate test;
 
 use antidote::Mutex;
 use libc::c_void;
+use memmap::{Mmap, Protection};
 use std::any::Any;
 use std::error::Error;
 use std::ffi::CStr;
 use std::fmt::{self, Display};
 use std::mem::transmute;
 use std::panic::catch_unwind;
+use std::path::Path;
 use std::ptr::null;
+use std::rc::Rc;
 
 // Bindgen example:
 // cd /tmp && git clone https://github.com/ArtemGr/vtd_xml.rs.git && cd vtd_xml.rs && cargo build
@@ -235,7 +239,7 @@ pub mod helpers {
   /// * `ucs` - VTD-XML functions, such as `toString`, tend to return a `malloc`-allocated `UCSChar` strings.
   ///           Though it's not necessarily in UCS as it follows the platform-specific `wchar_t` encoding.
   /// * `free` - Whether to `free` the `ucs`. Most strings returned by VTD-XML need being `free`ed.
-  pub fn ucs2string<'a> (sbuf: &'a mut String, ucs: *const UCSChar, free: bool) -> &'a String {
+  pub fn ucs2string<'a> (sbuf: &'a mut String, ucs: *const UCSChar, free: bool) -> &'a mut String {
     sbuf.clear();
     if ucs == null() {return sbuf}
 
@@ -334,6 +338,201 @@ fn any_to_str<'a> (message: &'a Box<Any + Send + 'static>) -> Option<&'a str> {
   if let Some (message) = message.downcast_ref::<String>() {return Some (&message[..])}
   return None}
 
+/// Raw XML data referenced by `VtdGen`.
+#[derive(Clone)]
+pub enum VtdMem {
+  None,
+  Vec (Rc<Vec<u8>>),
+  Mmap (Rc<memmap::Mmap>)}
+
+pub struct VtdGen {
+  pub vtd_gen: *mut sys::VTDGen,
+  vtd_mem: VtdMem}
+impl VtdGen {
+  pub fn new() -> VtdGen {
+    VtdGen {
+      vtd_gen: unsafe {sys::createVTDGen()},
+      vtd_mem: VtdMem::None}}
+
+  /// Tells VTD-XML to parse the given file.
+  ///
+  /// NB: This method reads the file into a `malloc` memory buffer!
+  /// In the future I plan to implement a `mmap`-based helper method.
+  ///
+  /// * `ns` - Whether to turn the XML namespaces support on.
+  /// * `path` - Location of the XML file.
+  pub fn parse_file<P: AsRef<Path>> (&mut self, ns: bool, path: P) -> Result<(), String> {
+    use sys::Bool;
+    let path: &Path = path.as_ref();
+    let path = try_s! (path.to_str().ok_or (format! ("VtdGen::parse_file] Can't make a str out of {:?}", path)));
+    let path = try_s! (std::ffi::CString::new (path));
+    if unsafe {sys::parseFile (self.vtd_gen, if ns {Bool::TRUE} else {Bool::FALSE}, path.as_ptr() as *const u8)} != Bool::TRUE {
+      return Err (format! ("VtdGen::parse_file] Error parsing {:?}.", path))}
+    Ok(())}
+
+  /// Maps the file into RAM and tells VTD-XML to parse it.
+  ///
+  /// * `ns` - Whether to turn the XML namespaces support on.
+  /// * `path` - Location of the XML file.
+  pub fn parse_mmap<P: AsRef<Path>> (&mut self, ns: bool, path: P) -> Result<(), String> {
+    use sys::Bool;
+    let bytes = Rc::new (try_s! (Mmap::open_path (path, Protection::Read)));
+    if bytes.len() > i32::max_value() as usize {return ERR! ("Large files ({}) are not supported yet", bytes.len())}
+    unsafe {sys::setDoc (self.vtd_gen, bytes.ptr(), bytes.len() as i32)};
+    self.vtd_mem = VtdMem::Mmap (bytes);
+    unsafe {sys::parse (self.vtd_gen, if ns {Bool::TRUE} else {Bool::FALSE})};
+    Ok(())}
+
+  /// Tells VTD-XML to parse the given part of a byte vector.
+  ///
+  /// The parsed slice is *not* copied, it is merely referenced (borrowed) by the VTD-XML.
+  /// `Rc` helps us not to accidentally loose the references memory.
+  ///
+  /// * `ns` - Whether to turn the XML namespaces support on.
+  pub fn parse_vec (&mut self, ns: bool, vec: Rc<Vec<u8>>, offset: usize, len: usize) -> Result<(), String> {
+    use sys::Bool;
+    { let slice = &vec[offset .. offset + len];
+      unsafe {sys::setDoc (self.vtd_gen, slice.as_ptr(), len as i32)}; }
+    self.vtd_mem = VtdMem::Vec (vec);
+    unsafe {sys::parse (self.vtd_gen, if ns {Bool::TRUE} else {Bool::FALSE})};
+    Ok(())}}
+impl Drop for VtdGen {
+  fn drop (self: &mut VtdGen) {
+    unsafe {sys::freeVTDGen (self.vtd_gen)};
+    self.vtd_gen = std::ptr::null_mut();}}
+
+/// Failed to navigate in the given direction.
+#[derive(Debug)]
+pub struct VtdNavError<'a> {
+  direction: sys::Direction,
+  tag: Option<&'a str>}
+impl<'a> std::fmt::Display for VtdNavError<'a> {
+  fn fmt (&self, fm: &mut std::fmt::Formatter) -> std::fmt::Result {
+    write! (fm, "Failed to move the VtdNav cursor to {:?}", self.direction)?;
+    if let Some (tag) = self.tag {write! (fm, " tag '{}'", tag)?}
+    write! (fm, ".")}}
+impl<'a> Error for VtdNavError<'a> {
+  fn description (&self) -> &str {"Failed to move the VtdNav cursor in the direction specified"}}
+
+/// Cursor position.
+#[derive (Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VtdNavPosition (libc::c_int);
+
+/// Iterator over the children nodes having the given `tag` name.
+pub struct VtdChildIter {
+  pub vtd_nav: *mut sys::VTDNav,
+  pub tag: Vec<sys::UCSChar>,
+  pub first: bool}
+impl Iterator for VtdChildIter {
+  type Item = VtdNavPosition;
+  fn next (&mut self) -> Option<VtdNavPosition> {
+    let direction = if self.first {self.first = false; sys::Direction::FirstChild} else {sys::Direction::NextSibling};
+    match unsafe {sys::toElement2_shim (self.vtd_nav, direction, self.tag.as_ptr())} {
+      sys::Bool::TRUE => Some (VtdNavPosition (unsafe {sys::getCurrentIndex_shim (self.vtd_nav)})),
+      sys::Bool::FALSE => None}}}
+impl Drop for VtdChildIter {
+  fn drop (&mut self) {
+    //unsafe {vtd_xml::sys::freeVTDNav_shim (self.vtd_nav)};  // Probably SEGVs in `free(vn->h1);`, haven't tried yet.
+    self.vtd_nav = std::ptr::null_mut()}}
+
+/// A cursor into the parsed XML document.
+pub struct VtdNav {
+  pub vtd_nav: *mut sys::VTDNav,
+  pub to_vtd: Vec<sys::UCSChar>,
+  pub from_vtd: String,
+  _vtd_mem: VtdMem}
+impl VtdNav {
+  /// Gets the document from the `VtdGen`, leaving the latter empty and ready to parse another one.
+  pub fn new (vg: &mut VtdGen) -> VtdNav {
+    VtdNav {
+      vtd_nav: unsafe {sys::getNav (vg.vtd_gen)},
+      to_vtd: Vec::new(),
+      from_vtd: String::new(),
+      _vtd_mem: vg.vtd_mem.clone()}}
+
+  /// Retrieve a string under the cursor.
+  ///
+  /// The string is cooked raw, meaning that "built-in entity and char references not resolved; entities and char references not expanded".
+  pub fn raw<'a> (&'a mut self) -> &'a String {
+    let idx = unsafe {sys::getCurrentIndex_shim (self.vtd_nav)};
+    helpers::ucs2string (&mut self.from_vtd, unsafe {sys::toString (self.vtd_nav, idx)}, true)}
+
+  /// Navigate the cursor to the first element in the given direction that matches the `tag` name.
+  pub fn to_named_element<'t> (&mut self, direction: sys::Direction, tag: &'t str) -> Result<&mut VtdNav, VtdNavError<'t>> {
+    if unsafe {sys::toElement2_shim (
+      self.vtd_nav, direction, helpers::str2ucs (&mut self.to_vtd, tag) .as_ptr())} != sys::Bool::TRUE {
+        return Err (VtdNavError {direction: direction, tag: Some (tag)})}
+    Ok (self)}
+
+  /// Navigate the cursor up.
+  pub fn up (&mut self) -> Result<&mut VtdNav, VtdNavError> {
+    if unsafe {sys::toElement_shim (self.vtd_nav, sys::Direction::Parent)} != sys::Bool::TRUE {
+      return Err (VtdNavError {direction: sys::Direction::Parent, tag: None})}
+    Ok (self)}
+
+  /// Navigate the cursor to the first child that matches the `tag` name.
+  pub fn first_child<'t> (&mut self, tag: &'t str) -> Result<&mut VtdNav, VtdNavError<'t>> {
+    self.to_named_element (sys::Direction::FirstChild, tag)}
+
+  /// Navigate the cursor to the next sibling that matches the `tag` name.
+  pub fn next_sibling<'t> (&mut self, tag: &'t str) -> Result<&mut VtdNav, VtdNavError<'t>> {
+    self.to_named_element (sys::Direction::NextSibling, tag)}
+
+  /// Iterator over the children nodes having the given `tag` name.
+  ///
+  /// NB: Creating an iterator is a rather costly operation, TBH.
+  /// We have to allocate a new `VTDNav` in order for the iterator not to hold a `&mut` reference to the original `VtdNav` cursor.
+  /// On the other hand, while using the iterator we don't have to recode the `tag` on every cycle.
+  pub fn child_iter (&mut self, tag: &str) -> VtdChildIter {
+    let idx = self.idx();
+    let vtd_nav = unsafe {sys::duplicateNav_shim (self.vtd_nav)};
+    unsafe {sys::recoverNode_shim (vtd_nav, idx.0)};
+    VtdChildIter {
+      vtd_nav: vtd_nav,
+      tag: helpers::str2ucs (&mut self.to_vtd, tag) .clone(),
+      first: true}}
+
+  /// Contents of the given attribute value.
+  ///
+  /// Returned string is cooked raw,
+  /// meaning that "built-in entity and char references not resolved; entities and char references not expanded".
+  ///
+  /// * `attr` - The name of the attribute to retrieve.
+  pub fn raw_attr<'a> (&'a mut self, attr: &str) -> Option<&'a mut String> {
+    let idx = unsafe {sys::getAttrVal (self.vtd_nav, helpers::str2ucs (&mut self.to_vtd, attr) .as_ptr())};
+    if idx == -1 {return None}
+    helpers::ucs2string (&mut self.from_vtd, unsafe {sys::toRawString (self.vtd_nav, idx)}, true);
+    Some (&mut self.from_vtd)}
+
+  /// The chunk of text from inside the current tag.
+  pub fn text<'a> (&'a mut self) -> Option<&'a mut String> {
+    let idx = unsafe {sys::getText (self.vtd_nav)};
+    if idx == -1 {return None}
+    helpers::ucs2string (&mut self.from_vtd, unsafe {sys::toString (self.vtd_nav, idx)}, true);
+    Some (&mut self.from_vtd)}
+
+  /// The current cursor position.
+  pub fn idx (&self) -> VtdNavPosition {
+    VtdNavPosition (unsafe {sys::getCurrentIndex_shim (self.vtd_nav)})}
+
+  /// Move the cursor to the given position.
+  pub fn set_idx (&mut self, idx: VtdNavPosition) -> &mut VtdNav {
+    unsafe {sys::recoverNode_shim (self.vtd_nav, idx.0)};
+    self}}
+/// Invokes `toString` on the cursor.
+impl std::fmt::Display for VtdNav {
+  fn fmt (&self, fm: &mut std::fmt::Formatter) -> std::fmt::Result {
+    let idx = unsafe {sys::getCurrentIndex_shim (self.vtd_nav)};
+    // NB: A thing to consider there is iconv *streaming* into `fm`,
+    // though it might break the UTF-8 contract by splitting the string into the buffer-size chunks.
+    let mut buf = String::with_capacity (128);
+    let s = helpers::ucs2string (&mut buf, unsafe {sys::toString (self.vtd_nav, idx)}, true);
+    write! (fm, "{}", s)}}
+impl Drop for VtdNav {
+  fn drop (self: &mut VtdNav) {
+    //unsafe {vtd_xml::sys::freeVTDNav_shim (self.vtd_nav)};  // SEGVs in `free(vn->h1);`
+    self.vtd_nav = std::ptr::null_mut()}}
+
 /// Called from inside a C function (`vtd_try_catch_shim`) in order to execute some Rust code while catching any VTD-XML exceptions.
 #[no_mangle] #[doc(hidden)]
 pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
@@ -380,6 +579,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
       unsafe {setDoc (vg, xml.as_ptr(), xml.len() as c_int)};
       unsafe {parse (vg, Bool::TRUE)};
       let vn = unsafe {getNav (vg)};
+      unsafe {freeVTDGen (vg)};
       let ap = unsafe {createAutoPilot2()};
       let mut to_ucs = Vec::new();
       let mut from_ucs = String::new();
@@ -404,7 +604,6 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
             x => panic! ("num is {}", x)}}}
       assert_eq! (num, 2);
       //unsafe {freeVTDNav_shim (vn)};  // Often crashes on Windows.
-      unsafe {freeVTDGen (vg)};
       unsafe {freeAutoPilot (ap)};
       Ok(())}) .expect ("!rss_reader");}
 
@@ -415,6 +614,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
       unsafe {setDoc (vg, xml.as_ptr(), xml.len() as c_int)};
       unsafe {parse (vg, Bool::FALSE)};
       let vn = unsafe {getNav (vg)};
+      unsafe {freeVTDGen (vg)};
       let mut to_ucs = Vec::new();
       let mut from_ucs = String::new();
       assert! (unsafe {toElement2_shim (vn, Direction::FirstChild, str2ucs (&mut to_ucs, "bar") .as_ptr())} == Bool::TRUE);
@@ -428,7 +628,6 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
       assert! (text != -1);
       assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Smokey");
       //unsafe {freeVTDNav_shim (vn)};  // Often crashes on Windows.
-      unsafe {freeVTDGen (vg)};
       Ok(())}) .expect ("!walk");}
 
   #[bench] fn panic (bencher: &mut Bencher) {  // See if `vtd_catch` would propagate the Rust panics from the closure.
@@ -455,6 +654,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
       unsafe {setDoc (vg, xml.as_ptr(), xml.len() as c_int)};
       unsafe {parse (vg, Bool::FALSE)};
       let vn = unsafe {getNav (vg)};
+      unsafe {freeVTDGen (vg)};
       let mut to_ucs = Vec::new();
       let mut from_ucs = String::new();
       bencher.iter (|| {
@@ -465,5 +665,4 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
         assert! (text != -1);
         assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Стар");});
       //unsafe {freeVTDNav_shim (vn)};  // SEGVs in `free(vn->h1);`
-      unsafe {freeVTDGen (vg)};
       Ok(())}) .expect ("!unicode");}}
