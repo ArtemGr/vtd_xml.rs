@@ -19,7 +19,7 @@
 // ^^^ Using GPL in order to be compatible with the VTD-XML license. ^^^
 
 // TODO: Consider using https://github.com/bluss/bencher
-#![feature(test)]
+#![feature(test, loop_break_value, type_ascription)]
 
 extern crate antidote;
 extern crate encoding;
@@ -545,13 +545,47 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
     let dugout: &mut Dugout = unsafe {transmute (dugout)};
     dugout.panic_message.push_str (message);}}
 
+/// Loop over the immediate children with the given tag name.
+///
+/// The loop might return a value using the `break value` mechanics.
+/// For example:
+///
+/// ```
+/// let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><foo>bar</foo>";
+/// let mut vg = VtdGen::new();
+/// vg.parse_vec (false, Rc::new (xml.into()), 0, xml.len());
+/// let mut vn = VtdNav::new (&mut vg);
+/// let first_bar = vtd_for_children! (vn, "foo", String::new(), {break vn.text().clone()});
+/// ```
+///
+/// * `vn` - `VtdNav` instance. Children are searched for immediately under the current position.
+/// * `tag` - The name of the child XML tag. We skip any children not matching the tag name.
+/// * `default` - Default return value of the loop. Set it to `()` if you're not returning a value.
+/// * `code` - A block of code that is run for every child matching the `tag`.
+#[macro_export] macro_rules! vtd_for_children {
+  ($vn: ident, $tag: expr, $default: expr, $code: block) => {{
+    let mut ret = $default;
+    let original_position = $vn.idx();
+    if $vn.first_child ($tag) .is_ok() {
+      let mut child_position = None;
+      ret = loop {
+        // We want `continue` to work and that means calling `next_sibling` at the start of the cycle rather than at the end of it.
+        if let Some (pos) = child_position {if $vn.set_idx (pos) .next_sibling ($tag) .is_err() {break $default}}
+        child_position = Some ($vn.idx());
+        assert! (child_position.is_some());  // To silence the "never read" warning.
+        $code;};}
+    $vn.set_idx (original_position);
+    ret}};
+  ($vn: ident, $tag: expr, $code: block) => (vtd_for_children! ($vn, $tag, (), $code))}
+
 #[cfg(test)] mod tests {
   use ::sys::*;
   use ::helpers::*;
-  use ::vtd_catch;
+  use ::{vtd_catch, VtdGen, VtdNav};
   use libc::{self, c_int};
   use std;
   use std::panic::catch_unwind;
+  use std::rc::Rc;
   use test::Bencher;  // cf. https://github.com/rust-lang/rfcs/issues/1484
 
   #[test] fn str2ucs_test() {
@@ -665,4 +699,36 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
         assert! (text != -1);
         assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Стар");});
       //unsafe {freeVTDNav_shim (vn)};  // SEGVs in `free(vn->h1);`
-      Ok(())}) .expect ("!unicode");}}
+      Ok(())}) .expect ("!unicode");}
+
+  #[test] fn vtd_for_children() {
+    let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><foo>\
+      <bar i=\"1\" />\
+      <bar i=\"2\">\
+        <baz>q</baz>\
+      </bar>\
+      <bar i=\"3\">\
+        <baz>w</baz>\
+        <baz>e</baz>\
+      </bar>\
+      <bar i=\"4\" />\
+      <bar i=\"5\" />\
+    </foo>";
+    vtd_catch (&mut || {
+      let mut vg = VtdGen::new();
+      vg.parse_vec (false, Rc::new (xml.into()), 0, xml.len()) .expect ("!parse_vec");
+      let mut vn = VtdNav::new (&mut vg);
+      let mut i = 0u32;
+      vtd_for_children! (vn, "bar", {  // Iterate over "bar"s.
+        i += 1;
+        assert_eq! (i, vn.raw_attr ("i") .expect ("!i") .parse() .expect ("!i"): u32);
+
+        if i == 1 {continue}  // We can skip to next "bar".
+        if i == 4 {break}  // We can stop the iteration.
+
+        let baz = vtd_for_children! (vn, "baz", String::new(), {break vn.text().unwrap().clone()});  // Get the text of first "baz".
+        if i == 2 {assert_eq! (baz, "q")}
+        else if i == 3 {assert_eq! (baz, "w")}
+        else {panic! ("Unexpected i: {}", i)}});
+      Ok(())
+    }) .unwrap();}}
