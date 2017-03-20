@@ -1,11 +1,9 @@
-// [build] cargo test -vv
+// NB: Verbose mode: cargo test -vv
 
 use std::env;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
-
-// TODO: Should probably switch to https://github.com/dlo9/vtd-xml-c.
 
 fn cmd (dir: &Path, cmd: &str) {
   println! ("<cmd cmd=\"{}\" dir=\"{}\">", cmd, dir.to_string_lossy());
@@ -17,23 +15,16 @@ fn cmd (dir: &Path, cmd: &str) {
 fn main() {
   let out_dir = env::var ("OUT_DIR") .expect ("!OUT_DIR");
   let out_dir = Path::new (&out_dir);
-  if !out_dir.join ("ximpleware-2.12-c.zip") .exists() {
-    cmd (out_dir, "wget \
-      'http://downloads.sourceforge.net/project/vtd-xml/vtd-xml/ximpleware_2.12/VTD-XML%20Standard%20Edition/ximpleware-2.12-c.zip'")}
+  let sources = out_dir.join ("vtd-xml-c");
 
-  let unpacked = out_dir.join ("ximpleware-2.12-c");
-  if !unpacked.exists() {
-    // pacman -S msys/unzip
-    cmd (out_dir, "unzip ximpleware-2.12-c.zip");}
-
-  let sources = unpacked.join ("vtd-xml");
+  if !sources.exists() {cmd (out_dir, "git clone --depth=1 https://github.com/dlo9/vtd-xml-c.git")}
   assert! (sources.exists());
 
   let target = env::var ("TARGET") .expect ("!TARGET");
   println! ("target: {}", target);
 
-  // TODO: See if we're in a Release cargo build and use -O3 there.
-  cmd (&sources, "perl -i.tmp -pe 's/CFLAGS= -c -O3/CFLAGS= -c -ggdb -fPIC -Og/' makefile");
+  cmd (&sources, "perl -i.tmp -pe 's/CFLAGS=\\s/CFLAGS=-fPIC /' makefile");
+  cmd (&sources, "perl -i.tmp -pe 's/\\tctags/\t#ctags/' makefile");
 
   if target.ends_with ("-windows-gnu") {
     cmd (&sources, "perl -i.tmp -pe 's/-lm//' makefile");}

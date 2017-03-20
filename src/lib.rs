@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Artem Grinblat
+ * Copyright (C) 2016-17 Artem Grinblat
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,20 +18,19 @@
 
 // ^^^ Using GPL in order to be compatible with the VTD-XML license. ^^^
 
-// TODO: Consider using https://github.com/bluss/bencher
 #![feature(test, loop_break_value, type_ascription)]
 
-extern crate antidote;
 extern crate encoding;
 #[macro_use] extern crate gstuff;
 #[macro_use] extern crate lazy_static;
 extern crate libc;
 extern crate memmap;
+extern crate parking_lot;
 extern crate test;
 
-use antidote::Mutex;
 use libc::c_void;
 use memmap::{Mmap, Protection};
+use parking_lot::Mutex;
 use std::any::Any;
 use std::error::Error;
 use std::ffi::CStr;
@@ -173,7 +172,7 @@ pub mod sys {
     /// Usually `evalXPath` is called afterwards.
     /// Return `True` is the XPath is valid.
     pub fn selectXPath (ap: *mut AutoPilot, s: *const UCSChar) -> Boolean;
-    pub fn bind (ap: *mut AutoPilot, vn: *mut VTDNav);
+    pub fn apBind (ap: *mut AutoPilot, vn: *mut VTDNav);
     pub fn evalXPath (ap: *mut AutoPilot) -> c_int;
     /// Convert a token at the given index to a String, (entities and char references resolved).
     /// An attribute name or an element name will get the UCS2 string of qualified name.
@@ -432,7 +431,7 @@ impl Iterator for VtdChildIter {
       sys::Bool::FALSE => None}}}
 impl Drop for VtdChildIter {
   fn drop (&mut self) {
-    //unsafe {vtd_xml::sys::freeVTDNav_shim (self.vtd_nav)};  // Probably SEGVs in `free(vn->h1);`, haven't tried yet.
+    unsafe {sys::freeVTDNav_shim (self.vtd_nav)};
     self.vtd_nav = std::ptr::null_mut()}}
 
 /// A cursor into the parsed XML document.
@@ -530,7 +529,7 @@ impl std::fmt::Display for VtdNav {
     write! (fm, "{}", s)}}
 impl Drop for VtdNav {
   fn drop (self: &mut VtdNav) {
-    //unsafe {vtd_xml::sys::freeVTDNav_shim (self.vtd_nav)};  // SEGVs in `free(vn->h1);`
+    unsafe {sys::freeVTDNav_shim (self.vtd_nav)};
     self.vtd_nav = std::ptr::null_mut()}}
 
 /// Called from inside a C function (`vtd_try_catch_shim`) in order to execute some Rust code while catching any VTD-XML exceptions.
@@ -622,7 +621,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
       unsafe {declareXPathNameSpace (ap, ns1.as_ptr(), url.as_ptr())};
       let mut num = 0;
       if unsafe {selectXPath (ap, str2ucs (&mut to_ucs, "//ns1:*") .as_ptr())} == Bool::TRUE {
-        unsafe {bind (ap, vn)};
+        unsafe {apBind (ap, vn)};
         let mut result; while {result = unsafe {evalXPath (ap)}; result} != -1 {
           let tmp_string = unsafe {toString (vn, result)};
           let name = ucs2string (&mut from_ucs, tmp_string, true) .clone();
@@ -637,7 +636,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
             2 => {assert_eq! (name, "dc:date"); assert_eq! (text, "2004-06-14T00:00:00Z")},
             x => panic! ("num is {}", x)}}}
       assert_eq! (num, 2);
-      //unsafe {freeVTDNav_shim (vn)};  // Often crashes on Windows.
+      unsafe {freeVTDNav_shim (vn)};
       unsafe {freeAutoPilot (ap)};
       Ok(())}) .expect ("!rss_reader");}
 
@@ -661,7 +660,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
       let text = unsafe {getText (vn)};
       assert! (text != -1);
       assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Smokey");
-      //unsafe {freeVTDNav_shim (vn)};  // Often crashes on Windows.
+      unsafe {freeVTDNav_shim (vn)};
       Ok(())}) .expect ("!walk");}
 
   #[bench] fn panic (bencher: &mut Bencher) {  // See if `vtd_catch` would propagate the Rust panics from the closure.
@@ -698,7 +697,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
         let text = unsafe {getText (vn)};
         assert! (text != -1);
         assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Стар");});
-      //unsafe {freeVTDNav_shim (vn)};  // SEGVs in `free(vn->h1);`
+      unsafe {freeVTDNav_shim (vn)};
       Ok(())}) .expect ("!unicode");}
 
   #[test] fn vtd_for_children() {
