@@ -46,7 +46,7 @@ use std::rc::Rc;
 // cd target/debug/build/vtd_xml-*/out/ximpleware-2.12-c/vtd
 // bindgen autoPilot.h | less
 
-/// Handmade FFI bindings to the C library (ximpleware_2.12).
+/// Handmade FFI bindings to the C library (https://github.com/dlo9/vtd-xml-c).
 pub mod sys {
   use libc::{c_int, c_char, c_void, wchar_t, size_t};
   use std::default::Default;
