@@ -344,6 +344,7 @@ pub enum VtdMem {
   Vec (Rc<Vec<u8>>),
   Mmap (Rc<memmap::Mmap>)}
 
+/// Parses the XMLs and owns the index.
 pub struct VtdGen {
   pub vtd_gen: *mut sys::VTDGen,
   vtd_mem: VtdMem}
@@ -385,7 +386,6 @@ impl VtdGen {
   /// Tells VTD-XML to parse the given part of a byte vector.
   ///
   /// The parsed slice is *not* copied, it is merely referenced (borrowed) by the VTD-XML.
-  /// `Rc` helps us not to accidentally loose the references memory.
   ///
   /// * `ns` - Whether to turn the XML namespaces support on.
   pub fn parse_vec (&mut self, ns: bool, vec: Rc<Vec<u8>>, offset: usize, len: usize) -> Result<(), String> {
@@ -456,6 +456,12 @@ impl VtdNav {
     let idx = unsafe {sys::getCurrentIndex_shim (self.vtd_nav)};
     helpers::ucs2string (&mut self.from_vtd, unsafe {sys::toString (self.vtd_nav, idx)}, true)}
 
+  /// Navigate the cursor to the first element in the given direction.
+  pub fn to_element<'t> (&mut self, direction: sys::Direction) -> Result<&mut VtdNav, VtdNavError<'t>> {
+    if unsafe {sys::toElement_shim (self.vtd_nav, direction)} != sys::Bool::TRUE {
+      return Err (VtdNavError {direction: direction, tag: None})}
+    Ok (self)}
+
   /// Navigate the cursor to the first element in the given direction that matches the `tag` name.
   pub fn to_named_element<'t> (&mut self, direction: sys::Direction, tag: &'t str) -> Result<&mut VtdNav, VtdNavError<'t>> {
     if unsafe {sys::toElement2_shim (
@@ -476,6 +482,10 @@ impl VtdNav {
   /// Navigate the cursor to the next sibling that matches the `tag` name.
   pub fn next_sibling<'t> (&mut self, tag: &'t str) -> Result<&mut VtdNav, VtdNavError<'t>> {
     self.to_named_element (sys::Direction::NextSibling, tag)}
+
+  /// Navigate back to the root element.
+  pub fn root<'t> (&mut self) -> Result<&mut VtdNav, VtdNavError<'t>> {
+    self.to_element (sys::Direction::Root)}
 
   /// Iterator over the children nodes having the given `tag` name.
   ///
