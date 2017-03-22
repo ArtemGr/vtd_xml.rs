@@ -1,6 +1,6 @@
 [package]
 name = "vtd_xml"
-version = "0.2.2"
+version = "0.3.0"
 authors = ["Artem <artemciy@gmail.com>"]
 links = "vtdxml"
 build = "build.rs"

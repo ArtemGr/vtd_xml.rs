@@ -484,8 +484,8 @@ impl VtdNav {
     self.to_named_element (sys::Direction::NextSibling, tag)}
 
   /// Navigate back to the root element.
-  pub fn root<'t> (&mut self) -> Result<&mut VtdNav, VtdNavError<'t>> {
-    self.to_element (sys::Direction::Root)}
+  pub fn root<'t> (&mut self) -> &mut VtdNav {
+    self.to_element (sys::Direction::Root) .expect ("!root")}
 
   /// Iterator over the children nodes having the given `tag` name.
   ///
