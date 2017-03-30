@@ -28,10 +28,10 @@ extern crate memmap;
 extern crate parking_lot;
 extern crate test;
 
+use gstuff::any_to_str;
 use libc::c_void;
 use memmap::{Mmap, Protection};
 use parking_lot::Mutex;
-use std::any::Any;
 use std::error::Error;
 use std::ffi::CStr;
 use std::fmt::{self, Display};
@@ -212,6 +212,7 @@ pub mod sys {
 pub mod helpers {
   use ::sys::{iconv_open_shim, iconv_shim, iconv_close_shim, is_errno_e2big, UCSChar, Iconv};
   use libc::{self, size_t, c_void};
+  use parking_lot::Mutex;
   use std::mem::{uninitialized, size_of};
   use std::ptr::null;
   use std::str::from_utf8_unchecked;
@@ -221,16 +222,16 @@ pub mod helpers {
   // http://stackoverflow.com/questions/33642339/how-is-a-high-unicode-codepoint-expressed-as-two-codepoints
   // http://stackoverflow.com/questions/38349372/convert-codepoint-to-utf-8-byte-array-in-java-using-shifting-operations
 
-  struct IconvSync (Iconv);
+  struct IconvSync (Mutex<Iconv>);
   unsafe impl Sync for IconvSync {}
   impl Drop for IconvSync {
     fn drop (&mut self) {
-      if unsafe {iconv_close_shim (self.0)} != 0 {panic! ("!iconv_close")}}}
+      if unsafe {iconv_close_shim (*self.0.lock())} != 0 {panic! ("!iconv_close")}}}
 
   lazy_static! {static ref WCHAR_T_TO_UTF_8: IconvSync = {
     let cd = unsafe {iconv_open_shim ("UTF-8\0".as_ptr(), "WCHAR_T\0".as_ptr())};
     if cd as size_t == size_t::max_value() {panic! ("!iconv_open")}
-    IconvSync (cd)};}
+    IconvSync (Mutex::new (cd))};}
 
   /// Uses libiconv to decode a NIL-terminated `wchar_t` string into a UTF-8 Rust string.
   ///
@@ -249,14 +250,14 @@ pub mod helpers {
       wide_len += 1;}
 
     // https://www.gnu.org/software/libc/manual/html_node/iconv-Examples.html
-    let cd = WCHAR_T_TO_UTF_8.0;
+    let cd = WCHAR_T_TO_UTF_8.0.lock();
     let mut buf: [u8; 1024] = unsafe {uninitialized()};
     let mut ucs_p: *const u8 = ucs as *const u8;
     let mut ucs_len = wide_len as usize * size_of::<UCSChar>();
     loop {
       let mut buf_p: *mut u8 = buf.as_mut_ptr();
       let mut buf_len = 1024;
-      let rc = unsafe {iconv_shim (cd, &mut ucs_p, &mut ucs_len, &mut buf_p, &mut buf_len)};
+      let rc = unsafe {iconv_shim (*cd, &mut ucs_p, &mut ucs_len, &mut buf_p, &mut buf_len)};
       let mut finished = true;
       if rc == size_t::max_value() {
         if unsafe {is_errno_e2big()} == 1 {  // `buf` is full.
@@ -331,12 +332,6 @@ pub fn vtd_catch (mut cb: &mut FnMut() -> Result<(), Box<Error>>) -> Result<(), 
     test::black_box (&lock);
     Err (Box::new (err))}}
 
-/// Useful with panic handlers.
-fn any_to_str<'a> (message: &'a Box<Any + Send + 'static>) -> Option<&'a str> {
-  if let Some (message) = message.downcast_ref::<&str>() {return Some (message)}
-  if let Some (message) = message.downcast_ref::<String>() {return Some (&message[..])}
-  return None}
-
 /// Raw XML data referenced by `VtdGen`.
 #[derive(Clone)]
 pub enum VtdMem {
@@ -356,8 +351,8 @@ impl VtdGen {
 
   /// Tells VTD-XML to parse the given file.
   ///
-  /// NB: This method reads the file into a `malloc` memory buffer!
-  /// In the future I plan to implement a `mmap`-based helper method.
+  /// NB: VTD-XML reads the file into a `malloc` memory buffer.  
+  /// If you don't want that extra copy then use the `parse_mmap` method instead.
   ///
   /// * `ns` - Whether to turn the XML namespaces support on.
   /// * `path` - Location of the XML file.
@@ -550,7 +545,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
     dugout.rc = (dugout.closure)();});
 
   if let Err (panic) = catch_rc {
-    let message = match any_to_str (&panic) {Some (s) => s, None => "panic in vtd_catch"};
+    let message = match any_to_str (&*panic) {Some (s) => s, None => "panic in vtd_catch"};
     let dugout: &mut Dugout = unsafe {transmute (dugout)};
     dugout.panic_message.push_str (message);}}
 
@@ -680,7 +675,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
         vtd_catch (&mut || panic! ("woot")) .expect ("!vtd_catch");}) {
           Ok (_) => panic! ("No panic!"),
           Err (panic) => {
-            let message = ::any_to_str (&panic) .expect ("!message");
+            let message = ::any_to_str (&*panic) .expect ("!message");
             assert_eq! (message, "vtd_catch] woot");}}});
     let _ = std::panic::take_hook();}  // Restore the panic handler.
 
