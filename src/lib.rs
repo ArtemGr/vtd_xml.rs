@@ -449,7 +449,7 @@ impl VtdNav {
   /// The string is cooked raw, meaning that "built-in entity and char references not resolved; entities and char references not expanded".
   pub fn raw<'a> (&'a mut self) -> &'a String {
     let idx = unsafe {sys::getCurrentIndex_shim (self.vtd_nav)};
-    helpers::ucs2string (&mut self.from_vtd, unsafe {sys::toString (self.vtd_nav, idx)}, true)}
+    helpers::ucs2string (&mut self.from_vtd, unsafe {sys::toRawString (self.vtd_nav, idx)}, true)}
 
   /// Navigate the cursor to the first element in the given direction.
   pub fn to_element<'t> (&mut self, direction: sys::Direction) -> Result<&mut VtdNav, VtdNavError<'t>> {
@@ -506,6 +506,15 @@ impl VtdNav {
     let idx = unsafe {sys::getAttrVal (self.vtd_nav, helpers::str2ucs (&mut self.to_vtd, attr) .as_ptr())};
     if idx == -1 {return None}
     helpers::ucs2string (&mut self.from_vtd, unsafe {sys::toRawString (self.vtd_nav, idx)}, true);
+    Some (&mut self.from_vtd)}
+
+  /// Contents of the given attribute value.
+  ///
+  /// * `attr` - The name of the attribute to retrieve.
+  pub fn attr<'a> (&'a mut self, attr: &str) -> Option<&'a mut String> {
+    let idx = unsafe {sys::getAttrVal (self.vtd_nav, helpers::str2ucs (&mut self.to_vtd, attr) .as_ptr())};
+    if idx == -1 {return None}
+    helpers::ucs2string (&mut self.from_vtd, unsafe {sys::toString (self.vtd_nav, idx)}, true);
     Some (&mut self.from_vtd)}
 
   /// The chunk of text from inside the current tag.
@@ -704,6 +713,28 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
         assert_eq! (ucs2string (&mut from_ucs, unsafe {toString (vn, text)}, true), "Стар");});
       unsafe {freeVTDNav_shim (vn)};
       Ok(())}) .expect ("!unicode");}
+
+  #[bench] fn attr (bencher: &mut Bencher) {
+    let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Product Title=\"Bowers &amp; Wilkins SA250 Mk2 Wired Black audio amplifier\" />";
+    vtd_catch (&mut || {
+      let mut vg = VtdGen::new();
+      vg.parse_vec (false, Rc::new (Vec::from (xml.as_bytes())), 0, xml.len()) .expect ("!parse_vec");
+      let mut vn = VtdNav::new (&mut vg);
+      assert_eq! (vn.raw_attr ("Title") .expect ("!Title"), "Bowers &amp; Wilkins SA250 Mk2 Wired Black audio amplifier");
+      bencher.iter (|| {
+        assert_eq! (vn.attr ("Title") .expect ("!Title"), "Bowers & Wilkins SA250 Mk2 Wired Black audio amplifier")});
+      Ok(())}) .expect ("!character_entities");}
+
+  #[bench] fn raw_attr (bencher: &mut Bencher) {
+    let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Product Title=\"Bowers &amp; Wilkins SA250 Mk2 Wired Black audio amplifier\" />";
+    vtd_catch (&mut || {
+      let mut vg = VtdGen::new();
+      vg.parse_vec (false, Rc::new (Vec::from (xml.as_bytes())), 0, xml.len()) .expect ("!parse_vec");
+      let mut vn = VtdNav::new (&mut vg);
+      assert_eq! (vn.attr ("Title") .expect ("!Title"), "Bowers & Wilkins SA250 Mk2 Wired Black audio amplifier");
+      bencher.iter (|| {
+        assert_eq! (vn.raw_attr ("Title") .expect ("!Title"), "Bowers &amp; Wilkins SA250 Mk2 Wired Black audio amplifier")});
+      Ok(())}) .expect ("!character_entities");}
 
   #[test] fn vtd_for_children() {
     let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><foo>\
