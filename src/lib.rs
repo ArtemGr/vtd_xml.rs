@@ -18,7 +18,7 @@
 
 // ^^^ Using GPL in order to be compatible with the VTD-XML license. ^^^
 
-#![feature(test, loop_break_value, type_ascription)]
+#![feature(test)]
 
 extern crate encoding;
 #[macro_use] extern crate gstuff;
@@ -30,10 +30,11 @@ extern crate test;
 
 use gstuff::any_to_str;
 use libc::c_void;
-use memmap::{Mmap, Protection};
+use memmap::Mmap;
 use parking_lot::Mutex;
 use std::error::Error;
 use std::ffi::CStr;
+use std::fs;
 use std::fmt::{self, Display};
 use std::mem::transmute;
 use std::panic::catch_unwind;
@@ -213,7 +214,7 @@ pub mod helpers {
   use ::sys::{iconv_open_shim, iconv_shim, iconv_close_shim, is_errno_e2big, UCSChar, Iconv};
   use libc::{self, size_t, c_void};
   use parking_lot::Mutex;
-  use std::mem::{uninitialized, size_of};
+  use std::mem::{size_of, MaybeUninit};
   use std::ptr::null;
   use std::str::from_utf8_unchecked;
 
@@ -251,7 +252,7 @@ pub mod helpers {
 
     // https://www.gnu.org/software/libc/manual/html_node/iconv-Examples.html
     let cd = WCHAR_T_TO_UTF_8.0.lock();
-    let mut buf: [u8; 1024] = unsafe {uninitialized()};
+    let mut buf: [u8; 1024] = unsafe {MaybeUninit::uninit().assume_init()};
     let mut ucs_p: *const u8 = ucs as *const u8;
     let mut ucs_len = wide_len as usize * size_of::<UCSChar>();
     loop {
@@ -297,14 +298,14 @@ impl Error for VtdError {
 lazy_static! {static ref LOCK: Mutex<()> = Mutex::new (());}
 
 struct Dugout<'a> {
-  closure: &'a mut FnMut() -> Result<(), Box<Error>>,
+  closure: &'a mut dyn FnMut() -> Result<(), Box<dyn Error>>,
   panic_message: String,
-  rc: Result<(), Box<Error>>}
+  rc: Result<(), Box<dyn Error>>}
 
 /// Catches VTD-XML exceptions, returning them as a Rust error.
 ///
 /// Rust panics in the `cb` are propagated.
-pub fn vtd_catch (mut cb: &mut FnMut() -> Result<(), Box<Error>>) -> Result<(), Box<Error>> {
+pub fn vtd_catch (cb: &mut dyn FnMut() -> Result<(), Box<dyn Error>>) -> Result<(), Box<dyn Error>> {
   // http://stackoverflow.com/a/38997480/257568.
   let mut dugout = Dugout {
     closure: cb,
@@ -371,9 +372,10 @@ impl VtdGen {
   /// * `path` - Location of the XML file.
   pub fn parse_mmap<P: AsRef<Path>> (&mut self, ns: bool, path: P) -> Result<(), String> {
     use sys::Bool;
-    let bytes = Rc::new (try_s! (Mmap::open_path (path, Protection::Read)));
+    let file = try_s! (fs::File::open (path));
+    let bytes = Rc::new (try_s! (unsafe {Mmap::map (&file)}));
     if bytes.len() > i32::max_value() as usize {return ERR! ("Large files ({}) are not supported yet", bytes.len())}
-    unsafe {sys::setDoc (self.vtd_gen, bytes.ptr(), bytes.len() as i32)};
+    unsafe {sys::setDoc (self.vtd_gen, bytes.as_ptr(), bytes.len() as i32)};
     self.vtd_mem = VtdMem::Mmap (bytes);
     unsafe {sys::parse (self.vtd_gen, if ns {Bool::TRUE} else {Bool::FALSE})};
     Ok(())}
@@ -692,7 +694,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
     bencher.iter (|| {
       let rc = vtd_catch (&mut || Err (From::from ("woot")));
       let err = rc.err().expect ("!err");
-      assert_eq! (err.description(), "woot");})}
+      assert_eq! (err.to_string(), "woot");})}
 
   #[bench] fn unicode (bencher: &mut Bencher) {
     let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><foo arg=\"Рок\">Стар</foo>";
@@ -756,7 +758,7 @@ pub extern "C" fn vtd_xml_try_catch_rust_shim (dugout: *mut c_void) {
       let mut i = 0u32;
       vtd_for_children! (vn, "bar", {  // Iterate over "bar"s.
         i += 1;
-        assert_eq! (i, vn.raw_attr ("i") .expect ("!i") .parse() .expect ("!i"): u32);
+        assert_eq! (i, vn.raw_attr ("i") .expect ("!i") .parse::<u32>() .expect ("!i"));
 
         if i == 1 {continue}  // We can skip to next "bar".
         if i == 4 {break}  // We can stop the iteration.
