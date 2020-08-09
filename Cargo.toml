@@ -1,6 +1,6 @@
 [package]
 name = "vtd_xml"
-version = "0.3.3"
+version = "0.3.4"
 authors = ["Artem <artemciy@gmail.com>"]
 links = "vtdxml"
 build = "build.rs"
@@ -19,7 +19,7 @@ doctest = false
 
 [dependencies]
 encoding = "0.2"
-gstuff = "0.6"
+gstuff = "0.7"
 lazy_static = "1"
 libc = "0.2"
 memmap = "0.7"
